@@ -454,18 +454,20 @@ export default function Home() {
   }, [isRunning]);
 
   // Fetch all databases & configurations from the API
+  // useCallback with empty deps [] — stable reference, never recreated.
   const fetchAllData = useCallback(async () => {
     try {
       // 1. Fetch Blueprints
       const bpRes = await fetch("/api/blueprints");
       if (bpRes.ok) {
-        const bpData = await bpRes.json();
+        const bpData: Record<string, string> = await bpRes.json();
+        const keys = Object.keys(bpData);
         setBlueprints(bpData);
-        if (Object.keys(bpData).length > 0) {
-          // Keep current selection or default to first
-          const currentSelect = selectedBlueprint && bpData[selectedBlueprint] ? selectedBlueprint : Object.keys(bpData)[0];
-          setSelectedBlueprint(currentSelect);
-          setBlueprintSpec(bpData[currentSelect]);
+        if (keys.length > 0) {
+          // Pick the first key as default selection on load
+          const firstKey = keys[0];
+          setSelectedBlueprint(firstKey);
+          setBlueprintSpec(bpData[firstKey]);
         }
       } else {
         console.error("Failed to fetch blueprints:", bpRes.status, bpRes.statusText);
@@ -509,11 +511,12 @@ export default function Home() {
     } catch (err) {
       console.error("Failed to sync backend sandbox state", err);
     }
-  }, [selectedBlueprint]);
+  }, []);
 
   useEffect(() => {
     fetchAllData();
   }, [fetchAllData]);
+
 
   // Telemetry presets text mapper
   const getPresetText = (name: string) => {
@@ -978,8 +981,12 @@ export default function Home() {
     let hasComplianceSignOff = false;
     let inCodeBlock = false;
     let codeBlockLines: string[] = [];
+    let prevLineWasBlank = false;
+    let prevLineWasHeading = false;
+    let prevLineWasList = false;
 
-    for (const rawLine of lines) {
+    for (let i = 0; i < lines.length; i++) {
+      const rawLine = lines[i];
       const line = rawLine.trim();
 
       // Check code block
@@ -1026,6 +1033,9 @@ export default function Home() {
             y += padding + 1; // Margin below block
           }
         }
+        prevLineWasBlank = false;
+        prevLineWasHeading = false;
+        prevLineWasList = false;
         continue;
       }
 
@@ -1034,7 +1044,39 @@ export default function Home() {
         continue;
       }
 
-      if (!line) { y += inSection ? 2.5 : 3.5; continue; }
+      if (!line) {
+        // Look ahead to check the type of the next non-empty line
+        let nextNonEmptyLine = "";
+        for (let j = i + 1; j < lines.length; j++) {
+          const trimmed = lines[j].trim();
+          if (trimmed) {
+            nextNonEmptyLine = trimmed;
+            break;
+          }
+        }
+
+        const nextIsList = nextNonEmptyLine.match(/^[-*•○◦■]\s+/) || nextNonEmptyLine.match(/^\d+\.\s+/);
+
+        if (prevLineWasBlank || prevLineWasHeading) {
+          continue;
+        }
+
+        if (prevLineWasList) {
+          if (nextIsList) {
+            // Skip spacing between consecutive list items
+            continue;
+          } else {
+            y += 1.5; // Small extra gap after the list before text/heading
+          }
+        } else {
+          y += inSection ? 2 : 2.5;
+        }
+
+        prevLineWasBlank = true;
+        prevLineWasHeading = false;
+        prevLineWasList = false;
+        continue;
+      }
 
       // Horizontal rule
       if (/^---+$/.test(line)) {
@@ -1042,7 +1084,11 @@ export default function Home() {
         setDraw(DIVIDER);
         doc.setLineWidth(0.35);
         doc.line(margin, y + 2, pageW - margin, y + 2);
-        y += 6; continue;
+        y += 6;
+        prevLineWasBlank = false;
+        prevLineWasHeading = false;
+        prevLineWasList = false;
+        continue;
       }
 
       // Heading detection
@@ -1072,7 +1118,10 @@ export default function Home() {
         setTxt(BLUE);
         doc.text(label, margin + 6, y + 5.8);
         inSection = true;
-        y += 13;
+        y += 13.0; // Perfect vertical separation (banner bottom margin)
+        prevLineWasBlank = false;
+        prevLineWasHeading = true;
+        prevLineWasList = false;
         continue;
       }
 
@@ -1089,13 +1138,19 @@ export default function Home() {
         doc.setFontSize(10);
         setTxt(DARK);
         doc.text(label, margin + 4, y + 3);
-        y += 7;
+        y += 8.0; // Perfect baseline-to-baseline spacing of 5.0mm (from y + 3 to y + 8)
 
         const rest = isSec ? (secM![2] || "").trim() : "";
         if (rest) {
-          writeWrappedInlineText(rest, margin + 4, contentW - 4, 5.5);
-          y += 3;
+          writeWrappedInlineText(rest, margin + 4, contentW - 4, 5);
+          y += 1.5;
+          prevLineWasHeading = false;
+          prevLineWasList = false;
+        } else {
+          prevLineWasHeading = true;
+          prevLineWasList = false;
         }
+        prevLineWasBlank = false;
         continue;
       }
 
@@ -1109,13 +1164,19 @@ export default function Home() {
         } else {
           writeWrappedInlineText(content, margin + 8, contentW - 10, 5, { type: "bullet" });
         }
-        y += 2.5;
+        y += 1.5; // Small bottom margin after bullet text
+        prevLineWasBlank = false;
+        prevLineWasHeading = false;
+        prevLineWasList = true;
         continue;
       }
 
       // Plain paragraph
-      writeWrappedInlineText(line, margin + 4, contentW - 4, 5.5);
-      y += 3.5;
+      writeWrappedInlineText(line, margin + 4, contentW - 4, 5);
+      y += 2.0;
+      prevLineWasBlank = false;
+      prevLineWasHeading = false;
+      prevLineWasList = false;
     }
 
     if (hasComplianceSignOff) {
@@ -1192,11 +1253,11 @@ export default function Home() {
   return (
     <div className="flex h-screen w-full bg-[#f6f8fc] overflow-hidden text-slate-800 font-sans">
       {/* ---------------- SIDEBAR (SafeGuard Control Panel) ---------------- */}
-      <aside className="w-80 bg-[#f6f8fc] border-r border-slate-200 flex flex-col justify-between p-6 shrink-0 z-10">
+      <aside className="w-80 bg-[#f6f8fc] border-r border-slate-300 flex flex-col justify-between p-6 shrink-0 z-10">
         <div className="space-y-6 flex-1 flex flex-col overflow-hidden">
           {/* Dashboard Header */}
           <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-[#0b57d0] text-white rounded-2xl shadow-sm">
+            <div className="p-2.5 bg-[#0b57d0] text-white rounded-xl shadow-sm">
               <Activity className="h-5 w-5 animate-pulse" />
             </div>
             <div>
@@ -1209,13 +1270,13 @@ export default function Home() {
             </div>
           </div>
 
-          <hr className="border-slate-200" />
+          <hr className="border-slate-300" />
 
           {/* Navigation Menu */}
           <nav className="space-y-1">
             <button
               onClick={() => setActiveTab("control")}
-              className={`w-full flex items-center gap-3 px-5 py-2.5 rounded-full text-xs font-bold transition ${
+              className={`w-full flex items-center gap-3 px-5 py-2.5 rounded-lg text-xs font-bold transition ${
                 activeTab === "control"
                   ? "bg-[#c2e7ff] text-[#001d35] shadow-sm"
                   : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/50"
@@ -1227,7 +1288,7 @@ export default function Home() {
 
             <button
               onClick={() => setActiveTab("blueprints")}
-              className={`w-full flex items-center gap-3 px-5 py-2.5 rounded-full text-xs font-bold transition ${
+              className={`w-full flex items-center gap-3 px-5 py-2.5 rounded-lg text-xs font-bold transition ${
                 activeTab === "blueprints"
                   ? "bg-[#c2e7ff] text-[#001d35] shadow-sm"
                   : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/50"
@@ -1239,7 +1300,7 @@ export default function Home() {
 
             <button
               onClick={() => setActiveTab("prompts")}
-              className={`w-full flex items-center gap-3 px-5 py-2.5 rounded-full text-xs font-bold transition ${
+              className={`w-full flex items-center gap-3 px-5 py-2.5 rounded-lg text-xs font-bold transition ${
                 activeTab === "prompts"
                   ? "bg-[#c2e7ff] text-[#001d35] shadow-sm"
                   : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/50"
@@ -1251,7 +1312,7 @@ export default function Home() {
 
             <button
               onClick={() => setActiveTab("history")}
-              className={`w-full flex items-center gap-3 px-5 py-2.5 rounded-full text-xs font-bold transition ${
+              className={`w-full flex items-center gap-3 px-5 py-2.5 rounded-lg text-xs font-bold transition ${
                 activeTab === "history"
                   ? "bg-[#c2e7ff] text-[#001d35] shadow-sm"
                   : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/50"
@@ -1262,17 +1323,17 @@ export default function Home() {
             </button>
           </nav>
 
-          <hr className="border-slate-200 mt-2" />
+          <hr className="border-slate-300 mt-2" />
         </div>
 
         {/* Footer Info */}
-        <div className="text-[10px] text-slate-500 space-y-1 mt-6 border-t border-slate-200 pt-4">
+        <div className="text-[10px] text-slate-500 space-y-1 mt-6 border-t border-slate-300 pt-4">
           <div className="font-semibold text-slate-700">TechCare SafeGuard Engine</div>
           <div>Inference: Llama-3.3-70B on Groq</div>
           <div>Protocols: Band SDK WebSockets</div>
           <button
             onClick={resetSandbox}
-            className="w-full mt-3.5 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-red-200 bg-red-50 hover:bg-red-100 text-red-600 font-bold text-[9px] uppercase tracking-wider transition shadow-sm"
+            className="w-full mt-3.5 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-red-300 bg-red-50 hover:bg-red-100 text-red-700 font-bold text-[9px] uppercase tracking-wider transition shadow-sm"
           >
             <Wrench className="h-3 w-3" />
             <span>Reset Sandbox Database</span>
@@ -1283,10 +1344,10 @@ export default function Home() {
       {/* ---------------- MAIN CONTENT AREA ---------------- */}
       <main className="flex-1 flex flex-col overflow-hidden">
         {/* Workspace Toolbar & System Metrics */}
-        <header className="h-20 bg-white border-b border-slate-200 flex items-center justify-between px-8 shrink-0 z-10">
+        <header className="h-20 bg-white border-b border-slate-300 flex items-center justify-between px-8 shrink-0 z-10">
           <div className="flex items-center gap-3">
             <span className="font-bold text-sm tracking-wide uppercase text-slate-800">
-              Crisis Room Dashboard
+              Operations Dashboard
             </span>
             {isRunning ? (
               <span className="text-[10px] px-2 py-0.5 bg-red-500/10 text-red-600 border border-red-500/20 font-bold rounded-full animate-pulse flex items-center gap-1">
@@ -1309,17 +1370,17 @@ export default function Home() {
                 <div className="text-sm font-bold text-[#0b57d0]">{metrics.total_runs}</div>
               </div>
               <div className="space-y-0.5">
-                <div className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Success Rate</div>
+                <div className="text-[9px] font-bold text-[#0b57d0] uppercase tracking-widest">Success Rate</div>
                 <div className="text-sm font-bold text-emerald-600">{metrics.success_rate}%</div>
               </div>
               <div className="space-y-0.5">
-                <div className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Avg Latency</div>
+                <div className="text-[9px] font-bold text-[#0b57d0] uppercase tracking-widest">Avg Latency</div>
                 <div className="text-sm font-bold text-amber-600">{metrics.avg_latency}s</div>
               </div>
             </div>
 
             {isRunning && (
-              <div className="bg-slate-100 border border-slate-200 px-3.5 py-1.5 rounded-lg text-xs font-bold text-[#0b57d0] flex items-center gap-2 shadow-sm">
+              <div className="bg-slate-100 border border-slate-300 px-3.5 py-1.5 rounded-lg text-xs font-bold text-[#0b57d0] flex items-center gap-2 shadow-sm">
                 <Clock className="h-3.5 w-3.5 animate-spin" />
                 <span>{elapsedTime}s</span>
               </div>
@@ -1328,13 +1389,13 @@ export default function Home() {
         </header>
 
         {/* Dynamic Screen Tab Contents */}
-        <div className="flex-1 overflow-y-auto p-8 space-y-6">
+        <div className="flex-1 overflow-y-auto p-8 space-y-6 bg-[#f6f8fc]">
           
           {/* TAB 1: CONTROL CENTER */}
           {activeTab === "control" && (
             <div className="space-y-6 max-w-6xl mx-auto">
               {/* Telemetry Presets Section */}
-              <section className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-4">
+              <section className="bg-white border border-slate-300 rounded-xl p-6 shadow-sm space-y-4">
                 <div>
                   <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
                     <ShieldAlert className="h-4.5 w-4.5 text-amber-500" />
@@ -1356,7 +1417,7 @@ export default function Home() {
                         key={name}
                         onClick={() => selectPreset(name)}
                         disabled={isRunning}
-                        className="flex items-center gap-3 py-2.5 px-4 text-xs font-bold border border-slate-200 bg-slate-50/50 rounded-xl hover:bg-blue-50/50 hover:border-blue-300 hover:text-blue-700 transition text-left disabled:opacity-50"
+                        className="flex items-center gap-3 py-2.5 px-4 text-xs font-bold border border-slate-300 bg-slate-50/50 rounded-lg hover:bg-blue-50/50 hover:border-blue-300 hover:text-blue-700 transition text-left disabled:opacity-50"
                       >
                         {getPresetIcon(name)}
                         <span>{name}</span>
@@ -1376,7 +1437,7 @@ export default function Home() {
                         type="checkbox"
                         checked={autoTrigger}
                         onChange={(e) => setAutoTrigger(e.target.checked)}
-                        className="rounded border-slate-300 text-[#0b57d0] focus:ring-[#0b57d0] h-3.5 w-3.5"
+                        className="rounded border-slate-400 text-[#0b57d0] focus:ring-[#0b57d0] h-3.5 w-3.5"
                       />
                       <span className="text-[10px] font-semibold text-slate-500">
                         Auto-Trigger SafeGuard on selection
@@ -1388,7 +1449,7 @@ export default function Home() {
                     onChange={(e) => setAlertInput(e.target.value)}
                     placeholder="Click a preset above or type your custom incident log..."
                     disabled={isRunning}
-                    className="w-full text-xs border border-slate-200 bg-slate-50/50 rounded-lg p-3 h-24 focus:outline-none focus:ring-1 focus:ring-[#0b57d0] font-sans text-slate-800 placeholder-slate-400 disabled:opacity-50"
+                    className="w-full text-xs border border-slate-400 bg-slate-50/50 rounded-lg p-3 h-24 focus:outline-none focus:ring-1 focus:ring-[#0b57d0] font-sans text-slate-800 placeholder-slate-400 disabled:opacity-50"
                   />
                 </div>
 
@@ -1401,7 +1462,7 @@ export default function Home() {
                         value={networkMode}
                         onChange={(e) => setNetworkMode(e.target.value)}
                         disabled={isRunning}
-                        className="text-xs bg-white border border-slate-200 rounded-md py-1 px-2.5 focus:outline-none focus:ring-1 focus:ring-[#0b57d0] disabled:opacity-50 text-slate-700 font-medium"
+                        className="text-xs bg-white border border-slate-400 rounded-lg py-1.5 px-2.5 focus:outline-none focus:ring-1 focus:ring-[#0b57d0] disabled:opacity-50 text-slate-700 font-medium"
                       >
                         <option>Offline Simulation Sandbox</option>
                         <option>Offline Mock (Instant)</option>
@@ -1422,7 +1483,7 @@ export default function Home() {
                         value={stepDelay}
                         onChange={(e) => setStepDelay(parseFloat(e.target.value))}
                         disabled={isRunning}
-                        className="h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-[#0b57d0] disabled:opacity-50"
+                        className="h-1 bg-slate-350 rounded-lg appearance-none cursor-pointer accent-[#0b57d0] disabled:opacity-50"
                       />
                     </div>
                   </div>
@@ -1430,7 +1491,7 @@ export default function Home() {
                   <button
                     onClick={() => triggerSafeGuard()}
                     disabled={isRunning || !alertInput.trim()}
-                    className="flex items-center gap-2 text-xs font-bold bg-[#0b57d0] hover:bg-[#0b57d0]/90 text-white py-2.5 px-6 rounded-full transition shadow-md hover:shadow-lg disabled:opacity-40"
+                    className="flex items-center gap-2 text-xs font-bold bg-[#0b57d0] hover:bg-[#0b57d0]/90 text-white py-2.5 px-6 rounded-lg transition shadow-md hover:shadow-lg disabled:opacity-40"
                   >
                     <Play className="h-4 w-4 fill-white text-white" />
                     <span>Trigger Containment SafeGuard</span>
@@ -1441,11 +1502,11 @@ export default function Home() {
               {/* SafeGuard logs & report display */}
               <div className="space-y-4">
                 {/* Layout Mode Toggles */}
-                <div className="flex items-center justify-between border-b border-slate-200 pb-3 mb-1 shrink-0">
+                <div className="flex items-center justify-between border-b border-slate-300 pb-3 mb-1 shrink-0">
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => setResultsView("console")}
-                      className={`px-4 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 ${
+                      className={`px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
                         resultsView === "console"
                           ? "bg-[#c2e7ff] text-[#001d35] shadow-sm"
                           : "bg-slate-100 text-slate-600 hover:bg-slate-200"
@@ -1456,7 +1517,7 @@ export default function Home() {
                     </button>
                     <button
                       onClick={() => setResultsView("report")}
-                      className={`px-4 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 ${
+                      className={`px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
                         resultsView === "report"
                           ? "bg-[#c2e7ff] text-[#001d35] shadow-sm"
                           : "bg-slate-100 text-slate-600 hover:bg-slate-200"
@@ -1489,12 +1550,12 @@ export default function Home() {
                 {/* View Rendering */}
                 {resultsView === "console" ? (
                   /* Live SafeGuard Console - Full Width */
-                  <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col h-[520px]">
+                  <div className="bg-white border border-slate-300 rounded-xl p-6 shadow-sm flex flex-col h-[520px]">
                     <div className="flex justify-between items-center mb-3 shrink-0">
                       <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
                         SafeGuard Real-Time Audit Console
                       </h3>
-                      <div className="flex items-center gap-1.5 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                      <div className="flex items-center gap-1.5 bg-slate-100 p-0.5 rounded-lg border border-slate-300">
                         <button
                           onClick={() => setReportFontSize("sm")}
                           className={`px-2 py-0.5 text-[10px] font-bold rounded ${reportFontSize === "sm" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
@@ -1518,7 +1579,7 @@ export default function Home() {
                         </button>
                       </div>
                     </div>
-                    <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl p-5 overflow-y-auto space-y-3.5 font-mono">
+                    <div className="flex-1 bg-slate-50 border border-slate-300 rounded-lg p-5 overflow-y-auto space-y-3.5 font-mono">
                       {safeGuardLogs.length === 0 ? (
                         isRunning ? (
                           <div className="h-full flex flex-col items-center justify-center text-[#0b57d0] space-y-2">
@@ -1555,7 +1616,7 @@ export default function Home() {
                           return (
                             <div
                               key={index}
-                              className={`bg-white border border-slate-100 p-3 rounded-lg flex flex-col gap-1.5 shadow-sm animate-fade-in ${borderClass}`}
+                              className={`bg-white border border-slate-300 p-3 rounded-lg flex flex-col gap-1.5 shadow-sm animate-fade-in ${borderClass}`}
                             >
                               <div className="flex items-center gap-2.5">
                                 <span className="text-[10px] font-bold text-slate-600">{log.agent}</span>
@@ -1581,12 +1642,12 @@ export default function Home() {
                   </div>
                 ) : (
                   /* Safety Report Document - Full Width Styled like Gemini */
-                  <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm flex flex-col min-h-[520px]">
+                  <div className="bg-white border border-slate-300 rounded-xl p-8 shadow-sm flex flex-col min-h-[520px]">
                     <div className="flex justify-between items-center border-b border-slate-150 pb-3 mb-5 shrink-0">
                       <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
                         Approved Mitigation Report
                       </h3>
-                      <div className="flex items-center gap-1.5 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                      <div className="flex items-center gap-1.5 bg-slate-100 p-0.5 rounded-lg border border-slate-300">
                         <button
                           onClick={() => setReportFontSize("sm")}
                           className={`px-2 py-0.5 text-[10px] font-bold rounded ${reportFontSize === "sm" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
@@ -1612,15 +1673,15 @@ export default function Home() {
                     </div>
                     <div className="max-w-7xl mx-auto w-full flex-1">
                       {!safetyReport ? (
-                        <div className="h-[400px] flex flex-col items-center justify-center text-slate-400 space-y-2 bg-white border border-slate-200 rounded-2xl shadow-sm">
+                        <div className="h-[400px] flex flex-col items-center justify-center text-slate-400 space-y-2 bg-white border border-slate-300 rounded-xl shadow-sm">
                           <FileText className="h-8 w-8 opacity-20" />
                           <p className="text-xs">Waiting for SafeGuard Safety Auditor compliance approval...</p>
                         </div>
                       ) : (
                         <div className="text-slate-700 h-full">
                           {(!finalReport.includes("---") && !isRunning) ? (
-                            <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm max-w-3xl mx-auto">
-                              <div className="flex items-center gap-2 pb-3 border-b border-slate-100 mb-4">
+                            <div className="bg-white border border-slate-300 p-6 rounded-xl shadow-sm max-w-3xl mx-auto">
+                              <div className="flex items-center gap-2 pb-3 border-b border-slate-300 mb-4">
                                 <Shield className="h-4.5 w-4.5 text-[#0b57d0]" />
                                 <h3 className="font-bold text-sm text-slate-800">Safety Incident Report</h3>
                               </div>
@@ -1629,8 +1690,8 @@ export default function Home() {
                           ) : (
                             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                               {/* Left Column: Safety Incident Report (Span 7) */}
-                              <div className="lg:col-span-7 bg-white border border-slate-200 p-6 rounded-2xl shadow-sm flex flex-col h-full min-h-[500px]">
-                                <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+                              <div className="lg:col-span-7 bg-white border border-slate-300 p-6 rounded-xl shadow-sm flex flex-col h-full min-h-[500px]">
+                                <div className="flex items-center justify-between pb-3 border-b border-slate-300 mb-4">
                                   <div className="flex items-center gap-2">
                                     <Shield className="h-4.5 w-4.5 text-[#0b57d0]" />
                                     <h3 className="font-bold text-sm text-slate-800">Safety Incident Report</h3>
@@ -1645,8 +1706,8 @@ export default function Home() {
                               {/* Right Column: Automated SafeGuard Containment & RCA Results (Span 5) */}
                               <div className="lg:col-span-5 flex flex-col gap-4">
                                 {/* Execution Logs Block */}
-                                <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm flex flex-col min-h-[160px]">
-                                  <div className="flex items-center justify-between pb-2 border-b border-slate-100 mb-3">
+                                <div className="bg-white border border-slate-300 p-6 rounded-xl shadow-sm flex flex-col min-h-[160px]">
+                                  <div className="flex items-center justify-between pb-2 border-b border-slate-300 mb-3">
                                     <div className="flex items-center gap-2">
                                       <Activity className="h-4.5 w-4.5 text-purple-600" />
                                       <h3 className="font-bold text-xs text-slate-800">SafeGuard Actuator Execution Logs</h3>
@@ -1672,8 +1733,8 @@ export default function Home() {
                                 </div>
 
                                 {/* Detective Report Block */}
-                                <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm flex flex-col min-h-[160px]">
-                                  <div className="flex items-center justify-between pb-2 border-b border-slate-100 mb-3">
+                                <div className="bg-white border border-slate-300 p-6 rounded-xl shadow-sm flex flex-col min-h-[160px]">
+                                  <div className="flex items-center justify-between pb-2 border-b border-slate-300 mb-3">
                                     <div className="flex items-center gap-2">
                                       <Search className="h-4.5 w-4.5 text-rose-600" />
                                       <h3 className="font-bold text-xs text-slate-800">Forensic Investigation & RCA</h3>
@@ -1699,8 +1760,8 @@ export default function Home() {
                                 </div>
 
                                 {/* Knowledge Curator Block */}
-                                <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm flex flex-col min-h-[160px]">
-                                  <div className="flex items-center justify-between pb-2 border-b border-slate-100 mb-3">
+                                <div className="bg-white border border-slate-300 p-6 rounded-xl shadow-sm flex flex-col min-h-[160px]">
+                                  <div className="flex items-center justify-between pb-2 border-b border-slate-300 mb-3">
                                     <div className="flex items-center gap-2">
                                       <Brain className="h-4.5 w-4.5 text-amber-600" />
                                       <h3 className="font-bold text-xs text-slate-800">Self-Learning Knowledge Curator</h3>
@@ -1748,8 +1809,8 @@ export default function Home() {
 
           {/* TAB 2: BLUEPRINTS MANAGER (KNOWLEDGE BASE EDITOR) */}
           {activeTab === "blueprints" && (
-            <div className="max-w-5xl mx-auto bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-6">
-              <div className="flex justify-between items-center border-b border-slate-200 pb-4">
+            <div className="max-w-5xl mx-auto bg-white border border-slate-300 rounded-xl p-6 shadow-sm space-y-6">
+              <div className="flex justify-between items-center border-b border-slate-300 pb-4">
                 <div>
                   <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
                     <Database className="h-5 w-5 text-blue-600" />
@@ -1762,14 +1823,14 @@ export default function Home() {
                 <div className="flex gap-2">
                   <button
                     onClick={startNetworkScan}
-                    className="flex items-center gap-1.5 text-xs font-bold bg-purple-50 border border-purple-200 text-purple-700 py-2 px-4 rounded-full hover:bg-purple-100 transition shadow-sm animate-pulse"
+                    className="flex items-center gap-1.5 text-xs font-bold bg-purple-50 border border-purple-300 text-purple-700 py-2 px-4 rounded-lg hover:bg-purple-100 transition shadow-sm animate-pulse"
                   >
                     <Radio className="h-4 w-4" />
                     <span>Scan Factory Network</span>
                   </button>
                   <button
                     onClick={() => setShowAddBlueprint(!showAddBlueprint)}
-                    className="flex items-center gap-1.5 text-xs font-bold bg-[#1a73e8] text-white py-2 px-4 rounded-full hover:bg-[#1557b0] transition shadow-sm"
+                    className="flex items-center gap-1.5 text-xs font-bold bg-[#1a73e8] text-white py-2 px-4 rounded-lg hover:bg-[#1557b0] transition shadow-sm"
                   >
                     <Plus className="h-4 w-4" />
                     <span>Add New Blueprint</span>
@@ -1779,7 +1840,7 @@ export default function Home() {
 
               {/* Add blueprint form */}
               {showAddBlueprint && (
-                <form onSubmit={addBlueprintSpec} className="bg-slate-50 border border-slate-200 p-5 rounded-2xl space-y-4 animate-fade-in">
+                <form onSubmit={addBlueprintSpec} className="bg-slate-50 border border-slate-300 p-5 rounded-xl space-y-4 animate-fade-in">
                   <div className="text-xs font-bold text-slate-800 uppercase tracking-wider">Add New Blueprint</div>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="md:col-span-1 space-y-1.5">
@@ -1790,7 +1851,7 @@ export default function Home() {
                         onChange={(e) => setNewBlueprintName(e.target.value)}
                         placeholder="e.g. Mixing Vat 5"
                         required
-                        className="w-full text-xs bg-white border border-slate-300 text-slate-800 rounded-lg py-1.5 px-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="w-full text-xs bg-white border border-slate-400 text-slate-800 rounded-lg py-1.5 px-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
                     <div className="md:col-span-2 space-y-1.5">
@@ -1800,7 +1861,7 @@ export default function Home() {
                         onChange={(e) => setNewBlueprintSpec(e.target.value)}
                         placeholder="TARGET: Mixing Vat 5&#10;CRITICAL THRESHOLD: 200C..."
                         required
-                        className="w-full text-xs bg-white border border-slate-300 text-slate-800 rounded-lg py-1.5 px-3 h-20 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="w-full text-xs bg-white border border-slate-400 text-slate-800 rounded-lg py-1.5 px-3 h-20 focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
                   </div>
@@ -1808,13 +1869,13 @@ export default function Home() {
                     <button
                       type="button"
                       onClick={() => setShowAddBlueprint(false)}
-                      className="text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 py-1.5 px-4 rounded-full transition"
+                      className="text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 py-1.5 px-4 rounded-lg transition"
                     >
                       Cancel
                     </button>
                     <button
                       type="submit"
-                      className="text-xs font-bold bg-[#1a73e8] hover:bg-[#1557b0] text-white py-1.5 px-4 rounded-full transition shadow-sm"
+                      className="text-xs font-bold bg-[#1a73e8] hover:bg-[#1557b0] text-white py-1.5 px-4 rounded-lg transition shadow-sm"
                     >
                       Save Blueprint
                     </button>
@@ -1825,7 +1886,7 @@ export default function Home() {
               {/* Main Directory Layout */}
               <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
                 {/* Left side: list of equipment */}
-                <div className="md:col-span-4 space-y-2 border-r border-slate-200 pr-6 max-h-96 overflow-y-auto">
+                <div className="md:col-span-4 space-y-2 border-r border-slate-300 pr-6 max-h-96 overflow-y-auto">
                   {Object.keys(blueprints).map((name) => (
                     <button
                       key={name}
@@ -1833,10 +1894,10 @@ export default function Home() {
                         setSelectedBlueprint(name);
                         setBlueprintSpec(blueprints[name]);
                       }}
-                      className={`w-full flex items-center justify-between p-3 rounded-xl text-xs font-semibold border transition text-left ${
+                      className={`w-full flex items-center justify-between p-3 rounded-lg text-xs font-semibold border transition text-left ${
                         selectedBlueprint === name
                           ? "bg-[#d3e3fd] border-[#c2e7ff] text-[#041e49]"
-                          : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
+                          : "bg-slate-50 border-slate-300 text-slate-700 hover:bg-slate-100"
                       }`}
                     >
                       <div className="flex items-center gap-2">
@@ -1857,7 +1918,7 @@ export default function Home() {
                         </span>
                         <button
                           onClick={deleteBlueprintSpec}
-                          className="flex items-center gap-1 text-[10px] font-bold text-red-600 hover:bg-red-50 hover:border-red-200 border border-transparent py-1 px-2 rounded-full transition"
+                          className="flex items-center gap-1 text-[10px] font-bold text-red-600 hover:bg-red-50 hover:border-red-200 border border-transparent py-1 px-2 rounded-lg transition"
                         >
                           <Trash2 className="h-3 w-3" />
                           <span>Delete</span>
@@ -1867,13 +1928,13 @@ export default function Home() {
                       <textarea
                         value={blueprintSpec}
                         onChange={(e) => setBlueprintSpec(e.target.value)}
-                        className="w-full text-xs font-mono border border-slate-300 bg-slate-50 rounded-xl p-4 h-64 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 leading-relaxed"
+                        className="w-full text-xs font-mono border border-slate-400 bg-slate-50 rounded-lg p-4 h-64 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 leading-relaxed"
                       />
 
                       <div className="flex justify-end pt-2">
                         <button
                           onClick={saveBlueprintSpec}
-                          className="text-xs font-bold bg-[#1a73e8] hover:bg-[#1557b0] text-white py-2 px-6 rounded-full transition shadow-sm"
+                          className="text-xs font-bold bg-[#1a73e8] hover:bg-[#1557b0] text-white py-2 px-6 rounded-lg transition shadow-sm"
                         >
                           Save Changes
                         </button>
@@ -1892,9 +1953,9 @@ export default function Home() {
 
           {/* TAB 3: AGENT PROMPTS EDITOR */}
           {activeTab === "prompts" && (
-            <div className="max-w-5xl mx-auto bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-6">
+            <div className="max-w-5xl mx-auto bg-white border border-slate-300 rounded-xl p-6 shadow-sm space-y-6">
               <div>
-                <h3 className="text-base font-bold text-slate-800 flex items-center gap-2 border-b border-slate-200 pb-4">
+                <h3 className="text-base font-bold text-slate-800 flex items-center gap-2 border-b border-slate-300 pb-4">
                   <FileCode className="h-5 w-5 text-blue-600" />
                   <span>Customize Agent Behavior & System Instructions</span>
                 </h3>
@@ -1914,7 +1975,7 @@ export default function Home() {
                   <textarea
                     value={prompts.coordinator}
                     onChange={(e) => setPrompts({ ...prompts, coordinator: e.target.value })}
-                    className="w-full text-xs font-mono border border-slate-300 bg-slate-50 rounded-xl p-3.5 h-28 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 leading-relaxed"
+                    className="w-full text-xs font-mono border border-slate-400 bg-slate-50 rounded-lg p-3.5 h-28 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 leading-relaxed"
                   />
                 </div>
 
@@ -1928,7 +1989,7 @@ export default function Home() {
                   <textarea
                     value={prompts.analyst}
                     onChange={(e) => setPrompts({ ...prompts, analyst: e.target.value })}
-                    className="w-full text-xs font-mono border border-slate-300 bg-slate-50 rounded-xl p-3.5 h-28 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 leading-relaxed"
+                    className="w-full text-xs font-mono border border-slate-400 bg-slate-50 rounded-lg p-3.5 h-28 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 leading-relaxed"
                   />
                 </div>
 
@@ -1942,7 +2003,7 @@ export default function Home() {
                   <textarea
                     value={prompts.auditor}
                     onChange={(e) => setPrompts({ ...prompts, auditor: e.target.value })}
-                    className="w-full text-xs font-mono border border-slate-300 bg-slate-50 rounded-xl p-3.5 h-28 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 leading-relaxed"
+                    className="w-full text-xs font-mono border border-slate-400 bg-slate-50 rounded-lg p-3.5 h-28 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 leading-relaxed"
                   />
                 </div>
 
@@ -1956,7 +2017,7 @@ export default function Home() {
                   <textarea
                     value={prompts.execution}
                     onChange={(e) => setPrompts({ ...prompts, execution: e.target.value })}
-                    className="w-full text-xs font-mono border border-slate-300 bg-slate-50 rounded-xl p-3.5 h-28 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 leading-relaxed"
+                    className="w-full text-xs font-mono border border-slate-400 bg-slate-50 rounded-lg p-3.5 h-28 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 leading-relaxed"
                   />
                 </div>
 
@@ -1970,7 +2031,7 @@ export default function Home() {
                   <textarea
                     value={prompts.forensic}
                     onChange={(e) => setPrompts({ ...prompts, forensic: e.target.value })}
-                    className="w-full text-xs font-mono border border-slate-300 bg-slate-50 rounded-xl p-3.5 h-28 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 leading-relaxed"
+                    className="w-full text-xs font-mono border border-slate-400 bg-slate-50 rounded-lg p-3.5 h-28 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 leading-relaxed"
                   />
                 </div>
 
@@ -1984,15 +2045,15 @@ export default function Home() {
                   <textarea
                     value={prompts.curator}
                     onChange={(e) => setPrompts({ ...prompts, curator: e.target.value })}
-                    className="w-full text-xs font-mono border border-slate-300 bg-slate-50 rounded-xl p-3.5 h-28 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 leading-relaxed"
+                    className="w-full text-xs font-mono border border-slate-400 bg-slate-50 rounded-lg p-3.5 h-28 focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800 leading-relaxed"
                   />
                 </div>
 
-                <div className="flex justify-end border-t border-slate-200 pt-4">
+                <div className="flex justify-end border-t border-slate-300 pt-4">
                   <button
                     onClick={saveAgentPrompts}
                     disabled={isSavingPrompts}
-                    className="text-xs font-bold bg-[#1a73e8] hover:bg-[#1557b0] text-white py-2.5 px-8 rounded-full transition shadow-sm disabled:opacity-50"
+                    className="text-xs font-bold bg-[#1a73e8] hover:bg-[#1557b0] text-white py-2.5 px-8 rounded-lg transition shadow-sm disabled:opacity-50"
                   >
                     {isSavingPrompts ? "Saving Rules..." : "Save Agent Instructions"}
                   </button>
@@ -2003,9 +2064,9 @@ export default function Home() {
 
           {/* TAB 4: INCIDENT HISTORY LOGS */}
           {activeTab === "history" && (
-            <div className="max-w-5xl mx-auto bg-white border border-slate-200 rounded-2xl p-6 shadow-sm space-y-6">
+            <div className="max-w-5xl mx-auto bg-white border border-slate-300 rounded-xl p-6 shadow-sm space-y-6">
               <div>
-                <h3 className="text-base font-bold text-slate-800 flex items-center gap-2 border-b border-slate-200 pb-4">
+                <h3 className="text-base font-bold text-slate-800 flex items-center gap-2 border-b border-slate-300 pb-4">
                   <History className="h-5 w-5 text-blue-600" />
                   <span>Audit Trail & Historical Telemetry Logs</span>
                 </h3>
@@ -2025,7 +2086,7 @@ export default function Home() {
                   <div className="overflow-x-auto">
                     <table className="w-full text-left text-xs border-collapse">
                       <thead>
-                        <tr className="border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                        <tr className="border-b border-slate-300 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
                           <th className="pb-3 pr-4">Room/Run ID</th>
                           <th className="pb-3 pr-4">Timestamp</th>
                           <th className="pb-3 pr-4">Target System</th>
@@ -2060,7 +2121,7 @@ export default function Home() {
                                   setSelectedHistoryItem(item);
                                   setActiveHistoryReportSubTab("safety");
                                 }}
-                                className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-600 hover:bg-blue-50 py-1.5 px-3 rounded-full border border-blue-200 transition"
+                                className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-600 hover:bg-blue-50 py-1.5 px-3 rounded-lg border border-blue-200 transition"
                               >
                                 <Eye className="h-3 w-3" />
                                 <span>Inspect Audit</span>
@@ -2077,9 +2138,9 @@ export default function Home() {
               {/* History details Modal / Overlay */}
               {selectedHistoryItem && (
                 <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-                  <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-6xl max-h-[85vh] overflow-hidden flex flex-col shadow-xl animate-fade-in">
+                  <div className="bg-white border border-slate-300 rounded-xl w-full max-w-6xl max-h-[85vh] overflow-hidden flex flex-col shadow-xl animate-fade-in">
                     {/* Modal header */}
-                    <div className="flex justify-between items-center p-5 border-b border-slate-200 bg-slate-50">
+                    <div className="flex justify-between items-center p-5 border-b border-slate-300 bg-slate-50">
                       <div className="flex items-center gap-3">
                         <span className="font-bold text-sm text-slate-800 font-mono">Run ID: {selectedHistoryItem.id}</span>
                         <span className="text-xs text-slate-500">
@@ -2093,14 +2154,14 @@ export default function Home() {
                             const ts = new Date(selectedHistoryItem.timestamp).toLocaleString();
                             generatePDF(selectedHistoryItem.report || "", equipment, ts);
                           }}
-                          className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-700 hover:bg-emerald-50 py-1 px-3 rounded-full border border-emerald-200 transition"
+                          className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-700 hover:bg-emerald-50 py-1 px-3 rounded-lg border border-emerald-200 transition"
                         >
                           <Download className="h-3.5 w-3.5" />
                           <span>Export PDF</span>
                         </button>
                         <button
                           onClick={() => setSelectedHistoryItem(null)}
-                          className="text-xs font-semibold text-slate-500 hover:text-slate-800 py-1 px-3 rounded-full hover:bg-slate-100 transition"
+                          className="text-xs font-semibold text-slate-500 hover:text-slate-800 py-1 px-3 rounded-lg hover:bg-slate-100 transition"
                         >
                           Close
                         </button>
@@ -2110,15 +2171,15 @@ export default function Home() {
                     {/* Modal body */}
                     <div className="flex-1 overflow-y-auto p-6 space-y-6">
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl text-xs space-y-1">
+                        <div className="bg-slate-50 border border-slate-300 p-4 rounded-lg text-xs space-y-1">
                           <div className="font-bold text-slate-400 uppercase text-[9px]">Target Machine</div>
                           <div className="font-bold text-slate-800 text-sm">{selectedHistoryItem.equipment}</div>
                         </div>
-                        <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl text-xs space-y-1">
+                        <div className="bg-slate-50 border border-slate-300 p-4 rounded-lg text-xs space-y-1">
                           <div className="font-bold text-slate-400 uppercase text-[9px]">SafeGuard Latency</div>
                           <div className="font-bold text-slate-800 text-sm">{selectedHistoryItem.latency}s</div>
                         </div>
-                        <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl text-xs space-y-1">
+                        <div className="bg-slate-50 border border-slate-300 p-4 rounded-lg text-xs space-y-1">
                           <div className="font-bold text-slate-400 uppercase text-[9px]">Execution Status</div>
                           <div>
                             {selectedHistoryItem.status === "success" ? (
@@ -2133,7 +2194,7 @@ export default function Home() {
                       {/* Raw input details */}
                       <div className="space-y-1.5">
                         <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Alert Input Warning Log:</div>
-                        <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl text-xs font-mono text-slate-700">
+                        <div className="bg-slate-50 border border-slate-300 p-4 rounded-lg text-xs font-mono text-slate-700">
                           {selectedHistoryItem.alert_text}
                         </div>
                       </div>
@@ -2141,7 +2202,7 @@ export default function Home() {
                       {/* Event steps */}
                       <div className="space-y-2">
                         <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">SafeGuard Conversation Logs:</div>
-                        <div className="space-y-2 bg-slate-50 p-4 rounded-xl border border-slate-200 max-h-48 overflow-y-auto font-mono text-xs">
+                        <div className="space-y-2 bg-slate-50 p-4 rounded-lg border border-slate-300 max-h-48 overflow-y-auto font-mono text-xs">
                           {selectedHistoryItem.logs.map((log: any, idx: number) => (
                             <div key={idx} className="border-b border-slate-100 pb-2 last:border-b-0 text-slate-700">
                               <span className="font-bold text-blue-600">[{log.agent}]: </span>
@@ -2155,18 +2216,18 @@ export default function Home() {
                       <div className="space-y-2">
                         <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">SafeGuard Reports & Containment Results:</div>
                         {!selectedHistoryItem.report ? (
-                          <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl text-xs text-slate-400 text-center py-8">
+                          <div className="bg-slate-50 border border-slate-350 p-5 rounded-lg text-xs text-slate-400 text-center py-8">
                             No report available.
                           </div>
                         ) : !selectedHistoryItem.report.includes("---") ? (
-                          <div className="bg-slate-50 border border-slate-200 p-6 rounded-xl text-xs font-sans leading-relaxed text-slate-700 whitespace-pre-wrap max-h-96 overflow-y-auto">
+                          <div className="bg-slate-50 border border-slate-300 p-6 rounded-lg text-xs font-sans leading-relaxed text-slate-700 whitespace-pre-wrap max-h-96 overflow-y-auto">
                             {renderReportDocument(selectedHistoryItem.report, selectedHistoryItem.equipment)}
                           </div>
                         ) : (
                           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                             {/* Left Column: Safety Incident Report (Span 7) */}
-                            <div className="lg:col-span-7 bg-slate-50 border border-slate-200 p-6 rounded-xl flex flex-col min-h-[300px] max-h-[500px] overflow-y-auto shadow-sm">
-                              <div className="flex items-center justify-between pb-2 border-b border-slate-200 mb-4">
+                            <div className="lg:col-span-7 bg-slate-50 border border-slate-300 p-6 rounded-lg flex flex-col min-h-[300px] max-h-[500px] overflow-y-auto shadow-sm">
+                              <div className="flex items-center justify-between pb-2 border-b border-slate-300 mb-4">
                                 <div className="flex items-center gap-2">
                                   <Shield className="h-4.5 w-4.5 text-[#0b57d0]" />
                                   <h4 className="font-bold text-xs text-slate-800">Safety Incident Report</h4>
@@ -2182,12 +2243,12 @@ export default function Home() {
                             <div className="lg:col-span-5 flex flex-col gap-4">
                               {/* Execution Logs */}
                               {parsedHistoryReport?.execution && (
-                                <div className="bg-slate-50 border border-slate-200 p-6 rounded-xl flex flex-col shadow-sm">
-                                  <div className="flex items-center gap-2 pb-2 border-b border-slate-200 mb-3">
+                                <div className="bg-slate-50 border border-slate-300 p-6 rounded-lg flex flex-col shadow-sm">
+                                  <div className="flex items-center gap-2 pb-2 border-b border-slate-300 mb-3">
                                     <Activity className="h-4.5 w-4.5 text-purple-600" />
                                     <h4 className="font-bold text-xs text-slate-800 font-sans">Execution Logs</h4>
                                   </div>
-                                  <div className="max-h-40 overflow-y-auto bg-slate-900 p-3 rounded-xl border border-slate-850 shadow-inner">
+                                  <div className="max-h-40 overflow-y-auto bg-slate-900 p-3 rounded-lg border border-slate-850 shadow-inner">
                                     {renderExecutionLogs(parsedHistoryReport.execution)}
                                   </div>
                                 </div>
@@ -2195,8 +2256,8 @@ export default function Home() {
 
                               {/* Detective Report */}
                               {parsedHistoryReport?.detective && (
-                                <div className="bg-slate-50 border border-slate-200 p-6 rounded-xl flex flex-col max-h-[250px] overflow-y-auto shadow-sm">
-                                  <div className="flex items-center gap-2 pb-2 border-b border-slate-200 mb-3">
+                                <div className="bg-slate-50 border border-slate-300 p-6 rounded-lg flex flex-col max-h-[250px] overflow-y-auto shadow-sm">
+                                  <div className="flex items-center gap-2 pb-2 border-b border-slate-300 mb-3">
                                     <Search className="h-4.5 w-4.5 text-rose-600" />
                                     <h4 className="font-bold text-xs text-slate-800 font-sans">Root Cause Analysis (RCA)</h4>
                                   </div>
@@ -2208,8 +2269,8 @@ export default function Home() {
 
                               {/* Knowledge Update */}
                               {parsedHistoryReport?.knowledge && (
-                                <div className="bg-slate-50 border border-slate-200 p-6 rounded-xl flex flex-col max-h-[250px] overflow-y-auto shadow-sm">
-                                  <div className="flex items-center gap-2 pb-2 border-b border-slate-200 mb-3">
+                                <div className="bg-slate-50 border border-slate-300 p-6 rounded-lg flex flex-col max-h-[250px] overflow-y-auto shadow-sm">
+                                  <div className="flex items-center gap-2 pb-2 border-b border-slate-300 mb-3">
                                     <Brain className="h-4.5 w-4.5 text-amber-600" />
                                     <h4 className="font-bold text-xs text-slate-800 font-sans">Knowledge Curator updates</h4>
                                   </div>
@@ -2230,9 +2291,9 @@ export default function Home() {
               {/* Network Scanner Modal / Overlay */}
               {showScanModal && (
                 <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-                  <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-3xl max-h-[85vh] overflow-hidden flex flex-col shadow-xl animate-fade-in">
+                  <div className="bg-white border border-slate-300 rounded-xl w-full max-w-3xl max-h-[85vh] overflow-hidden flex flex-col shadow-xl animate-fade-in">
                     {/* Modal header */}
-                    <div className="flex justify-between items-center p-5 border-b border-slate-200 bg-slate-50">
+                    <div className="flex justify-between items-center p-5 border-b border-slate-300 bg-slate-50">
                       <div className="flex items-center gap-3">
                         <Radio className="h-5 w-5 text-purple-600 animate-pulse" />
                         <span className="font-bold text-sm text-slate-850">Active Network Scanner & Auto-Ingestion</span>
@@ -2243,7 +2304,7 @@ export default function Home() {
                             if (!isScanningNetwork) setShowScanModal(false);
                           }}
                           disabled={isScanningNetwork}
-                          className="text-xs font-semibold text-slate-500 hover:text-slate-800 py-1 px-3 rounded-full hover:bg-slate-100 transition disabled:opacity-50"
+                          className="text-xs font-semibold text-slate-500 hover:text-slate-800 py-1 px-3 rounded-lg hover:bg-slate-100 transition disabled:opacity-50"
                         >
                           Close
                         </button>
@@ -2253,7 +2314,7 @@ export default function Home() {
                     {/* Modal body */}
                     <div className="flex-1 overflow-y-auto p-6 space-y-6">
                       {/* Scanner Progress / Animation */}
-                      <div className="flex flex-col items-center justify-center py-6 bg-slate-50 rounded-xl border border-slate-200 space-y-4">
+                      <div className="flex flex-col items-center justify-center py-6 bg-slate-50 rounded-lg border border-slate-300 space-y-4">
                         {isScanningNetwork ? (
                           <>
                             <div className="relative">
@@ -2279,7 +2340,7 @@ export default function Home() {
                       {/* Live scanning logs */}
                       <div className="space-y-2">
                         <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Scan Event Logs:</div>
-                        <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl text-xs font-mono text-slate-700 max-h-48 overflow-y-auto space-y-1.5">
+                        <div className="bg-slate-50 border border-slate-300 p-4 rounded-lg text-xs font-mono text-slate-700 max-h-48 overflow-y-auto space-y-1.5">
                           {scanLogs.length === 0 ? (
                             <div className="text-slate-400 italic">Initializing scanner...</div>
                           ) : (
@@ -2297,10 +2358,10 @@ export default function Home() {
                       {scanResults.length > 0 && (
                         <div className="space-y-2 animate-fade-in">
                           <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Discovered Network Assets ({scanResults.length}):</div>
-                          <div className="overflow-hidden border border-slate-200 rounded-xl bg-slate-50">
+                          <div className="overflow-hidden border border-slate-300 rounded-lg bg-slate-50">
                             <table className="w-full text-left text-xs">
                               <thead>
-                                <tr className="border-b border-slate-200 bg-slate-100 text-slate-500 text-[10px] font-bold uppercase tracking-wider">
+                                <tr className="border-b border-slate-300 bg-slate-100 text-slate-500 text-[10px] font-bold uppercase tracking-wider">
                                   <th className="py-2.5 px-4">IP Address</th>
                                   <th className="py-2.5 px-4">Equipment / Model</th>
                                   <th className="py-2.5 px-4">Status</th>
