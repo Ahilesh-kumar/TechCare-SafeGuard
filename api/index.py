@@ -19,6 +19,10 @@ except ImportError:
 
 app = FastAPI()
 
+@app.get("/")
+def read_root():
+    return {"status": "ok", "message": "TechCare Swarm API is running. Go to /docs for Swagger documentation."}
+
 # Configure CORS for frontend access
 _frontend_url = os.environ.get("FRONTEND_URL", "")
 _allowed_origins = [
