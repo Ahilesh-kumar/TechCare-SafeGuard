@@ -23,6 +23,20 @@ app = FastAPI()
 def read_root():
     return {"status": "ok", "message": "TechCare Swarm API is running. Go to /docs for Swagger documentation."}
 
+@app.on_event("startup")
+async def startup_event():
+    try:
+        # Add parent directory of api to sys.path so we can import run_agents
+        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if parent_dir not in sys.path:
+            sys.path.append(parent_dir)
+        
+        import run_agents
+        asyncio.create_task(run_agents.main())
+        print("🚀 Started persistent Band.ai agents runner task in the background.")
+    except Exception as e:
+        print(f"⚠️ Failed to start background agents runner: {e}")
+
 # Configure CORS for frontend access
 _frontend_url = os.environ.get("FRONTEND_URL", "")
 _allowed_origins = [

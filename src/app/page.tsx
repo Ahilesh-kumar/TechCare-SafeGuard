@@ -37,6 +37,7 @@ interface SwarmLog {
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState("control");
+  const [reportFontSize, setReportFontSize] = useState<"sm" | "base" | "lg">("base");
   const [alertInput, setAlertInput] = useState("");
   const [swarmLogs, setSwarmLogs] = useState<SwarmLog[]>([]);
   const [finalReport, setFinalReport] = useState("");
@@ -106,6 +107,38 @@ export default function Home() {
   const renderReportDocument = (reportText: string, equipmentName?: string) => {
     if (!reportText) return null;
 
+    const getFontSizeClasses = () => {
+      switch (reportFontSize) {
+        case "sm":
+          return {
+            heading: "text-xs font-bold text-slate-800 tracking-wide mt-4 mb-1.5",
+            paragraph: "text-[11px] text-slate-600 leading-relaxed mb-3 font-normal",
+            item: "text-[11px] text-slate-600 leading-relaxed font-normal",
+            list: "space-y-1.5 my-2.5",
+            title: "text-sm font-semibold text-slate-900 border-b border-slate-150 pb-3 mb-4 tracking-tight"
+          };
+        case "lg":
+          return {
+            heading: "text-base font-bold text-slate-800 tracking-wide mt-7 mb-2.5",
+            paragraph: "text-sm text-slate-600 leading-relaxed mb-5 font-normal",
+            item: "text-sm text-slate-600 leading-relaxed font-normal",
+            list: "space-y-3.5 my-4",
+            title: "text-xl font-bold text-slate-900 border-b border-slate-150 pb-5 mb-7 tracking-tight"
+          };
+        case "base":
+        default:
+          return {
+            heading: "text-sm font-bold text-slate-800 tracking-wide mt-6 mb-2",
+            paragraph: "text-xs text-slate-600 leading-relaxed mb-4 font-normal",
+            item: "text-xs text-slate-600 leading-relaxed font-normal",
+            list: "space-y-2.5 my-3",
+            title: "text-lg font-medium text-slate-900 border-b border-slate-150 pb-4 mb-6 tracking-tight"
+          };
+      }
+    };
+
+    const fs = getFontSizeClasses();
+
     // Normalize newlines and split by line
     const lines = reportText.split("\n");
     const renderedElements: React.ReactNode[] = [];
@@ -114,7 +147,7 @@ export default function Home() {
     const flushList = (key: number) => {
       if (listBuffer.length === 0) return null;
       const list = (
-        <div key={`list-${key}`} className="space-y-2.5 my-3">
+        <div key={`list-${key}`} className={`${fs.list}`}>
           {[...listBuffer]}
         </div>
       );
@@ -142,7 +175,7 @@ export default function Home() {
         // Clean up hashes and colons at the end of heading
         const headingText = trimmed.replace(/^#+\s+/, "").replace(/:$/, "").trim();
         renderedElements.push(
-          <h3 key={idx} className="text-sm font-bold text-slate-800 tracking-wide mt-6 mb-2 first:mt-2">
+          <h3 key={idx} className={`${fs.heading} first:mt-2`}>
             {headingText}
           </h3>
         );
@@ -170,7 +203,7 @@ export default function Home() {
         }
 
         listBuffer.push(
-          <div key={`item-${idx}`} className="flex items-start gap-3 pl-2 text-xs text-slate-600 leading-relaxed font-normal">
+          <div key={`item-${idx}`} className={`flex items-start gap-3 pl-2 leading-relaxed font-normal ${fs.item}`}>
             <span className={`text-slate-400 font-bold select-none shrink-0 ${isNumbered ? "text-[10px] w-4 text-right" : ""}`}>
               {prefix}
             </span>
@@ -194,14 +227,14 @@ export default function Home() {
           const remainingText = headerMatch[2].trim();
           
           renderedElements.push(
-            <h3 key={`h-${idx}`} className="text-sm font-bold text-slate-800 tracking-wide mt-6 mb-2">
+            <h3 key={`h-${idx}`} className={`${fs.heading}`}>
               {headingText}
             </h3>
           );
           
           if (remainingText) {
             renderedElements.push(
-              <p key={`p-${idx}`} className="text-xs text-slate-600 leading-relaxed mb-4 font-normal">
+              <p key={`p-${idx}`} className={`${fs.paragraph}`}>
                 {renderMarkdownText(remainingText)}
               </p>
             );
@@ -212,7 +245,7 @@ export default function Home() {
 
       // Plain paragraph line
       renderedElements.push(
-        <p key={idx} className="text-xs text-slate-600 leading-relaxed mb-4 font-normal">
+        <p key={idx} className={`${fs.paragraph}`}>
           {renderMarkdownText(trimmed)}
         </p>
       );
@@ -231,7 +264,7 @@ export default function Home() {
 
     return (
       <div className="space-y-4 text-left">
-        <h2 className="text-lg font-medium text-slate-900 border-b border-slate-150 pb-4 mb-6 tracking-tight">
+        <h2 className={`${fs.title}`}>
           {reportTitle}
         </h2>
         <div className="space-y-1">
@@ -1015,9 +1048,34 @@ export default function Home() {
                 {resultsView === "console" ? (
                   /* Live Swarm Console - Full Width */
                   <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col h-[520px]">
-                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 shrink-0">
-                      Swarm Real-Time Audit Console
-                    </h3>
+                    <div className="flex justify-between items-center mb-3 shrink-0">
+                      <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                        Swarm Real-Time Audit Console
+                      </h3>
+                      <div className="flex items-center gap-1.5 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                        <button
+                          onClick={() => setReportFontSize("sm")}
+                          className={`px-2 py-0.5 text-[10px] font-bold rounded ${reportFontSize === "sm" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                          title="Small Text"
+                        >
+                          A-
+                        </button>
+                        <button
+                          onClick={() => setReportFontSize("base")}
+                          className={`px-2 py-0.5 text-[10px] font-bold rounded ${reportFontSize === "base" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                          title="Normal Text"
+                        >
+                          A
+                        </button>
+                        <button
+                          onClick={() => setReportFontSize("lg")}
+                          className={`px-2 py-0.5 text-[10px] font-bold rounded ${reportFontSize === "lg" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                          title="Large Text"
+                        >
+                          A+
+                        </button>
+                      </div>
+                    </div>
                     <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl p-5 overflow-y-auto space-y-3.5 font-mono">
                       {swarmLogs.length === 0 ? (
                         <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-2">
@@ -1060,7 +1118,9 @@ export default function Home() {
                                    log.agent.includes("Forensic") ? "Forensic" : "Curator"}
                                 </span>
                               </div>
-                              <p className="text-xs text-slate-700 whitespace-pre-wrap leading-relaxed font-sans">
+                              <p className={`text-slate-700 whitespace-pre-wrap leading-relaxed font-sans ${
+                                reportFontSize === "sm" ? "text-[10px]" : reportFontSize === "lg" ? "text-sm" : "text-xs"
+                              }`}>
                                 {log.text}
                               </p>
                             </div>
@@ -1073,7 +1133,35 @@ export default function Home() {
                 ) : (
                   /* Safety Report Document - Full Width Styled like Gemini */
                   <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm flex flex-col min-h-[520px]">
-                    <div className="max-w-3xl mx-auto w-full">
+                    <div className="flex justify-between items-center border-b border-slate-150 pb-3 mb-5 shrink-0">
+                      <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                        Approved Mitigation Report
+                      </h3>
+                      <div className="flex items-center gap-1.5 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                        <button
+                          onClick={() => setReportFontSize("sm")}
+                          className={`px-2 py-0.5 text-[10px] font-bold rounded ${reportFontSize === "sm" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                          title="Small Text"
+                        >
+                          A-
+                        </button>
+                        <button
+                          onClick={() => setReportFontSize("base")}
+                          className={`px-2 py-0.5 text-[10px] font-bold rounded ${reportFontSize === "base" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                          title="Normal Text"
+                        >
+                          A
+                        </button>
+                        <button
+                          onClick={() => setReportFontSize("lg")}
+                          className={`px-2 py-0.5 text-[10px] font-bold rounded ${reportFontSize === "lg" ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                          title="Large Text"
+                        >
+                          A+
+                        </button>
+                      </div>
+                    </div>
+                    <div className="max-w-3xl mx-auto w-full flex-1">
                       {!finalReport ? (
                         <div className="h-[400px] flex flex-col items-center justify-center text-slate-400 space-y-2">
                           <FileText className="h-8 w-8 opacity-20" />
