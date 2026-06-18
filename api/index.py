@@ -25,17 +25,21 @@ def read_root():
 
 @app.on_event("startup")
 async def startup_event():
-    try:
-        # Add parent directory of api to sys.path so we can import run_agents
-        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if parent_dir not in sys.path:
-            sys.path.append(parent_dir)
-        
-        import run_agents
-        asyncio.create_task(run_agents.main())
-        print("🚀 Started persistent Band.ai agents runner task in the background.")
-    except Exception as e:
-        print(f"⚠️ Failed to start background agents runner: {e}")
+    # Only start background agents if explicitly requested (e.g. on Render production)
+    if os.environ.get("START_BG_AGENTS") == "true":
+        try:
+            # Add parent directory of api to sys.path so we can import run_agents
+            parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if parent_dir not in sys.path:
+                sys.path.append(parent_dir)
+            
+            import run_agents
+            asyncio.create_task(run_agents.main())
+            print("🚀 Started persistent Band.ai agents runner task in the background.")
+        except Exception as e:
+            print(f"⚠️ Failed to start background agents runner: {e}")
+    else:
+        print("ℹ️ Background agents runner skipped. Run 'python run_agents.py' manually to connect remote agents.")
 
 # Configure CORS for frontend access
 _frontend_url = os.environ.get("FRONTEND_URL", "")
@@ -64,6 +68,7 @@ class TriggerPayload(BaseModel):
     alert_text: str
     delay: float = 0.1
     live_mode: bool = True
+    mock_mode: bool = False
 
 class BlueprintPayload(BaseModel):
     name: str
@@ -185,8 +190,21 @@ async def trigger_swarm(payload: TriggerPayload):
 
     # The status callback will be invoked by the agents to push UI updates
     async def status_callback(agent: str, text: str):
-        logs.append({"agent": agent, "text": text})
-        await queue.put({"type": "log", "agent": agent, "text": text})
+        if text.startswith("REPORT_SAFETY:"):
+            content = text.split("REPORT_SAFETY:", 1)[1]
+            await queue.put({"type": "report_part", "part": "safety", "content": content})
+        elif text.startswith("REPORT_EXECUTION:"):
+            content = text.split("REPORT_EXECUTION:", 1)[1]
+            await queue.put({"type": "report_part", "part": "execution", "content": content})
+        elif text.startswith("REPORT_DETECTIVE:"):
+            content = text.split("REPORT_DETECTIVE:", 1)[1]
+            await queue.put({"type": "report_part", "part": "detective", "content": content})
+        elif text.startswith("REPORT_KNOWLEDGE:"):
+            content = text.split("REPORT_KNOWLEDGE:", 1)[1]
+            await queue.put({"type": "report_part", "part": "knowledge", "content": content})
+        else:
+            logs.append({"agent": agent, "text": text})
+            await queue.put({"type": "log", "agent": agent, "text": text})
 
     # Run the orchestrator in a background task
     async def run_orchestrator():
@@ -201,7 +219,8 @@ async def trigger_swarm(payload: TriggerPayload):
                 alert_text=payload.alert_text,
                 status_callback=status_callback,
                 delay=payload.delay,
-                live_mode=payload.live_mode
+                live_mode=payload.live_mode,
+                mock_mode=payload.mock_mode
             )
             status = "success"
             await queue.put({"type": "report", "report": report})
@@ -245,7 +264,15 @@ async def trigger_swarm(payload: TriggerPayload):
                 break
             yield f"data: {json.dumps(event)}\n\n"
 
-    return StreamingResponse(sse_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        sse_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 # --- KNOWLEDGE BASE ENDPOINTS ---
 
@@ -297,7 +324,15 @@ async def scan_network():
                 break
             yield f"data: {json.dumps(event)}\n\n"
             
-    return StreamingResponse(sse_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        sse_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 # --- SYSTEM PROMPT ENDPOINTS ---
 

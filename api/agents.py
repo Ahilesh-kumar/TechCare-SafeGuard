@@ -20,7 +20,123 @@ logger = logging.getLogger("TechCareSwarm")
 
 # Initialize Groq Client
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+groq_client = AsyncGroq(api_key=GROQ_API_KEY, max_retries=0, timeout=30.0) if GROQ_API_KEY else None
+
+async def safe_groq_completion(messages: list, response_format: dict = None, temperature: float = 0.0, preferred_model: str = "llama-3.1-8b-instant", max_tokens: int = 600):
+    """
+    Executes a Groq chat completion call. If it fails (due to 429 rate limit,
+    decommissioned model, timeout, or any other error), it automatically fails over
+    to the next available model before throwing an error.
+    For TPM (tokens per minute) rate limits, it will attempt to back off and retry the same model.
+    """
+    if not groq_client:
+        raise RuntimeError("Groq client not initialized")
+
+    models_to_try = [preferred_model]
+    backups = [
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile",
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "qwen/qwen3.6-27b",
+        "qwen/qwen3-32b"
+    ]
+    for b in backups:
+        if b not in models_to_try:
+            models_to_try.append(b)
+
+    import re
+    last_err = None
+    for i, model in enumerate(models_to_try):
+        retries = 3
+        backoff = 2.0
+        while retries > 0:
+            try:
+                logger.info(f"Attempting Groq chat completion using model: {model}")
+                chat_completion = await groq_client.chat.completions.create(
+                    messages=messages,
+                    model=model,
+                    response_format=response_format,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                return chat_completion
+            except Exception as e:
+                last_err = e
+                err_str = str(e)
+                
+                # Check if it is a rate limit error (429)
+                is_rate_limit = False
+                if hasattr(e, "status_code") and e.status_code == 429:
+                    is_rate_limit = True
+                elif "rate_limit" in err_str.lower() or "too many requests" in err_str.lower() or "429" in err_str:
+                    is_rate_limit = True
+
+                if is_rate_limit:
+                    # Check if it is a Daily Token/Request limit (TPD/RPD)
+                    # For daily limits, retrying the same model won't help, so we fail over immediately.
+                    if "tokens per day" in err_str or "requests per day" in err_str or "tpd" in err_str.lower() or "rpd" in err_str.lower():
+                        logger.warning(f"Daily rate limit reached for {model}. Failing over to next model.")
+                        break # Break the retry loop to fail over
+
+                    # Parse retry duration if present
+                    sleep_seconds = backoff
+                    # Look for "Please try again in 10.4s"
+                    match_s = re.search(r"try again in (\d+(?:\.\d+)?)s", err_str)
+                    # Look for "Please try again in 10m28.992s"
+                    match_m = re.search(r"try again in (\d+)m(\d+(?:\.\d+)?)s", err_str)
+                    
+                    if match_s:
+                        sleep_seconds = float(match_s.group(1)) + 0.5
+                    elif match_m:
+                        sleep_seconds = int(match_m.group(1)) * 60 + float(match_m.group(2)) + 0.5
+
+                    # If sleep time is too long (e.g. > 15s), fail over immediately
+                    if sleep_seconds > 15.0:
+                        logger.warning(f"Rate limit retry wait too long ({sleep_seconds:.1f}s) for {model}. Failing over.")
+                        break
+
+                    logger.warning(f"Groq model {model} rate-limited. Retrying in {sleep_seconds:.2f}s... ({retries} retries left)")
+                    await asyncio.sleep(sleep_seconds)
+                    retries -= 1
+                    backoff *= 2
+                    continue
+                else:
+                    # Non-rate-limit error (e.g. API authentication, invalid params), fail over immediately
+                    break
+
+        # If we broke out or exhausted retries for this model, fail over to the next
+        if i < len(models_to_try) - 1:
+            logger.warning(f"Groq model {model} failed permanently or rate-limit retry limit reached. Failing over to model {models_to_try[i+1]}...")
+            await asyncio.sleep(0.3)
+
+    if last_err:
+        raise last_err
+    raise RuntimeError("Failed to generate completion from all models")
+
+def sanitize_report(text: str) -> str:
+    """
+    Post-processes the LLM report string:
+    1. Fixes double-escaped newlines that come from JSON string values (\\n -> actual newline).
+    2. Converts Python-dict-like report strings e.g. {'EXECUTIVE SUMMARY': 'foo', ...}
+       into clean bold-header markdown.
+    """
+    import re as _re
+    if not text:
+        return text
+    # Fix double-escaped newlines from JSON string fields
+    text = text.replace("\\n", "\n").replace("\\t", "  ")
+    # Detect Python dict-like format: starts with { and has 'KEY': 'value' pattern
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        pairs = _re.findall(r"""['\"]([A-Z][A-Z &:\-/]+)['\"]:\s*['\"]([\s\S]*?)['\"]\s*(?:[,}])""", stripped)
+        if pairs:
+            lines = []
+            for key, val in pairs:
+                clean_key = key.strip().rstrip(":")
+                clean_val = val.replace("\\n", "\n").replace("\\t", "  ").strip()
+                lines.append(f"**{clean_key.title()}:**\n{clean_val}")
+            return "\n\n".join(lines)
+    return text
 
 class MessageWrapper:
     def __init__(self, content: str, sender_id: str = "", sender_type: str = ""):
@@ -197,12 +313,12 @@ class CoordinatorAdapter(SimpleAdapter[list]):
             except Exception:
                 pass
 
-    async def _identify_equipment(self, alert_text: str) -> str:
+    async def _identify_equipment(self, alert_text: str, mock_mode: bool = False) -> str:
         """
         Uses Groq API to parse the alert and identify the equipment name/model.
         """
         self.system_prompt = self._load_system_prompt()
-        if not groq_client:
+        if not groq_client or mock_mode:
             # Fallback parsing if Groq API key is not present
             alert_lower = alert_text.lower()
             for name in ["Vat 4", "Server Rack B", "Robotic Arm 9", "Cooling Tower 2", "Main Generator Block A", "Pneumatic Press 7"]:
@@ -230,14 +346,15 @@ class CoordinatorAdapter(SimpleAdapter[list]):
         )
 
         try:
-            chat_completion = await groq_client.chat.completions.create(
+            chat_completion = await safe_groq_completion(
                 messages=[
                     {"role": "system", "content": "You are a helpful industrial dispatch assistant that outputs raw JSON."},
                     {"role": "user", "content": prompt}
                 ],
-                model="llama-3.1-8b-instant",
+                preferred_model="llama-3.1-8b-instant",
                 response_format={"type": "json_object"},
-                temperature=0.0
+                temperature=0.0,
+                max_tokens=80
             )
             response_content = chat_completion.choices[0].message.content
             data = json.loads(response_content)
@@ -403,12 +520,12 @@ class SystemsAnalystAdapter(SimpleAdapter[list]):
             mentions=[self.auditor_id]
         )
 
-    async def _generate_resolution(self, equipment_name: str, kb_text: str, alert_text: str) -> str:
+    async def _generate_resolution(self, equipment_name: str, kb_text: str, alert_text: str, mock_mode: bool = False) -> str:
         """
         Uses Groq API to generate a precise resolution sequence based on the KB protocol.
         """
         self.system_prompt = self._load_system_prompt()
-        if not groq_client:
+        if not groq_client or mock_mode:
             # Fallback local resolution if Groq API key is not present
             return (
                 f"Isolate {equipment_name} immediately based on safety protocols.\n"
@@ -426,13 +543,14 @@ class SystemsAnalystAdapter(SimpleAdapter[list]):
         )
 
         try:
-            chat_completion = await groq_client.chat.completions.create(
+            chat_completion = await safe_groq_completion(
                 messages=[
                     {"role": "system", "content": "You are a lead systems analyst and technical engineer. Be precise and base decisions strictly on the enterprise knowledge base."},
                     {"role": "user", "content": prompt}
                 ],
-                model="llama-3.1-8b-instant",
-                temperature=0.0
+                preferred_model="llama-3.1-8b-instant",
+                temperature=0.0,
+                max_tokens=450
             )
             return chat_completion.choices[0].message.content
         except Exception as e:
@@ -442,12 +560,12 @@ class SystemsAnalystAdapter(SimpleAdapter[list]):
                 f"Refer to actions: {kb_text}"
             )
 
-    async def _generate_revised_resolution(self, equipment_name: str, kb_text: str, alert_text: str, previous_resolution: str, feedback: str) -> str:
+    async def _generate_revised_resolution(self, equipment_name: str, kb_text: str, alert_text: str, previous_resolution: str, feedback: str, mock_mode: bool = False) -> str:
         """
         Generates a revised technical resolution addressing Safety Auditor violations.
         """
         self.system_prompt = self._load_system_prompt()
-        if not groq_client:
+        if not groq_client or mock_mode:
             # Fallback if Groq API key is not present
             return f"Revised resolution for {equipment_name} to address safety issues: {feedback}"
 
@@ -468,20 +586,21 @@ class SystemsAnalystAdapter(SimpleAdapter[list]):
         )
 
         try:
-            chat_completion = await groq_client.chat.completions.create(
+            chat_completion = await safe_groq_completion(
                 messages=[
                     {"role": "system", "content": "You are a lead systems analyst and technical engineer. Be precise and revise the resolution to address safety violations."},
                     {"role": "user", "content": prompt}
                 ],
-                model="llama-3.1-8b-instant",
-                temperature=0.0
+                preferred_model="llama-3.1-8b-instant",
+                temperature=0.0,
+                max_tokens=450
             )
             return chat_completion.choices[0].message.content
         except Exception as e:
             logger.error(f"Error communicating with Groq API for revision: {e}")
             return f"Revised resolution for {equipment_name} following compliance rules."
 
-    async def _ingest_equipment_spec_async(self, equipment_name: str, status_callback=None, tools=None) -> str:
+    async def _ingest_equipment_spec_async(self, equipment_name: str, status_callback=None, tools=None, mock_mode: bool = False) -> str:
         """
         Dynamically retrieves/reconstructs typical specifications for an unknown equipment name,
         structures it, saves it to database.json, and returns the generated specs string.
@@ -514,22 +633,28 @@ class SystemsAnalystAdapter(SimpleAdapter[list]):
         # Point 5 & 6: Emit status logs indicating lookup and simulated HITL verification
         if status_callback:
             await status_callback("Systems Analyst Agent", f"🔍 Unrecognized equipment **'{equipment_name}'**. Checking local documents catalog...")
-            await asyncio.sleep(0.5)
+            if not mock_mode:
+                await asyncio.sleep(0.5)
             if manual_content:
                 await status_callback("Systems Analyst Agent", f"📄 Found matching manual **'{matched_filename}'** in `/manuals` folder.")
-                await asyncio.sleep(0.5)
+                if not mock_mode:
+                    await asyncio.sleep(0.5)
             else:
                 await status_callback("Systems Analyst Agent", f"⚠️ No matching manual found in `/manuals`. Using web/LLM fallback.")
-                await asyncio.sleep(0.5)
+                if not mock_mode:
+                    await asyncio.sleep(0.5)
             
             await status_callback("Systems Analyst Agent", f"⚠️ Safety Policy: Ingesting '{equipment_name}' requires human approval.")
-            await asyncio.sleep(0.5)
+            if not mock_mode:
+                await asyncio.sleep(0.5)
             await status_callback("Systems Analyst Agent", f"✅ [Bypass / Auto-Auth] Safety Officer authorized ingestion. Committing...")
-            await asyncio.sleep(0.5)
+            if not mock_mode:
+                await asyncio.sleep(0.5)
             await status_callback("Systems Analyst Agent", f"🧠 Extracting typical safety thresholds and recovery protocols...")
-            await asyncio.sleep(0.5)
+            if not mock_mode:
+                await asyncio.sleep(0.5)
         
-        if tools:
+        if tools and not mock_mode:
             # Live Band SDK mode chat messaging
             try:
                 await tools.send_message(
@@ -569,7 +694,7 @@ class SystemsAnalystAdapter(SimpleAdapter[list]):
                 logger.warning(f"Failed to send status messages in room: {e}")
 
         spec_content = ""
-        if groq_client:
+        if groq_client and not mock_mode:
             if manual_content:
                 prompt = (
                     f"Act as a professional industrial systems engineering knowledge base retriever.\n"
@@ -602,13 +727,14 @@ class SystemsAnalystAdapter(SimpleAdapter[list]):
                     f"Keep each action concise (one sentence)."
                 )
             try:
-                chat_completion = await groq_client.chat.completions.create(
+                chat_completion = await safe_groq_completion(
                     messages=[
                         {"role": "system", "content": "You are a professional industrial safety database engineer. Return only the raw text specifications block."},
                         {"role": "user", "content": prompt}
                     ],
-                    model="llama-3.1-8b-instant",
-                    temperature=0.2
+                    preferred_model="llama-3.1-8b-instant",
+                    temperature=0.2,
+                    max_tokens=250
                 )
                 spec_content = chat_completion.choices[0].message.content.strip()
             except Exception as e:
@@ -795,13 +921,13 @@ class SafetyAuditorAdapter(SimpleAdapter[list]):
                     mentions=[self.execution_id]
                 )
 
-    async def _audit_resolution(self, resolution_text: str, kb_text: str) -> dict:
+    async def _audit_resolution(self, resolution_text: str, kb_text: str, mock_mode: bool = False) -> dict:
         """
         Audits the proposed technical resolution against safety regulations.
         Returns a dict: {"safe": bool, "feedback": str, "report": str}
         """
         self.system_prompt = self._load_system_prompt()
-        if not groq_client:
+        if not groq_client or mock_mode:
             # Fallback local audit check (always safe unless simulated to fail)
             return {
                 "safe": True,
@@ -838,33 +964,35 @@ class SafetyAuditorAdapter(SimpleAdapter[list]):
             "4. Does the resolution follow the correct action sequence from the knowledge base?\n"
             "5. Are lockout/tagout (LOTO) procedures included where applicable?\n"
             "6. Is post-action verification and monitoring specified?\n\n"
-            "Output a JSON object with the audit results:\n"
-            "If any check fails:\n"
-            "{\n"
-            "  \"safe\": false,\n"
-            "  \"feedback\": \"Specific violations found and what must be corrected...\",\n"
-            "  \"report\": \"\"\n"
-            "}\n"
-            "If ALL checks pass:\n"
-            "{\n"
-            "  \"safe\": true,\n"
-            "  \"feedback\": \"\",\n"
-            "  \"report\": \"Finalized incident report formatted as an extremely concise Markdown document. Limit each section to a maximum of 1-2 bullet points or short sentences, focusing only on the absolute essentials and important details. Do not use built-in emojis in titles/headers. Use these exact headers: EXECUTIVE SUMMARY, IMPORTANT STEPS HIGHLIGHTED, STEP-BY-STEP ACTION REQUIRED, SAFETY PRECAUTIONS, CONCLUSION, COMPLIANCE SIGN-OFF\"\n"
-            "}"
+            "Output a JSON object with these exact keys: safe (boolean), feedback (string), report (string).\n"
+            "If any check fails: {\"safe\": false, \"feedback\": \"list each violation\", \"report\": \"\"}\n"
+            "If ALL checks pass: {\"safe\": true, \"feedback\": \"\", \"report\": \"<markdown report>\"}\n\n"
+            "For the report field, write clean markdown using these exact bold headers on their own lines:\n"
+            "**EXECUTIVE SUMMARY:**\n"
+            "**IMPORTANT STEPS HIGHLIGHTED:**\n"
+            "**STEP-BY-STEP ACTION REQUIRED:**\n"
+            "**SAFETY PRECAUTIONS:**\n"
+            "**CONCLUSION:**\n"
+            "**COMPLIANCE SIGN-OFF:**\n\n"
+            "Keep each section to 1-2 sentences or bullet points maximum. Use \\n for newlines inside the JSON string."
         )
 
         try:
-            chat_completion = await groq_client.chat.completions.create(
+            chat_completion = await safe_groq_completion(
                 messages=[
                     {"role": "system", "content": "You are a Safety Auditor and Compliance Inspector. You must output JSON only."},
                     {"role": "user", "content": prompt}
                 ],
-                model="llama-3.1-8b-instant",
+                preferred_model="llama-3.1-8b-instant",
                 response_format={"type": "json_object"},
-                temperature=0.0
+                temperature=0.0,
+                max_tokens=900
             )
             response_content = chat_completion.choices[0].message.content
-            return json.loads(response_content)
+            result = json.loads(response_content)
+            if "report" in result:
+                result["report"] = sanitize_report(result["report"])
+            return result
         except Exception as e:
             logger.error(f"Error in Groq safety audit: {e}")
             return {
@@ -873,12 +1001,12 @@ class SafetyAuditorAdapter(SimpleAdapter[list]):
                 "report": f"### EXECUTIVE SUMMARY:\nTelemetry and containment protocols verified.\n\n### CONCLUSION:\nSafe-state verified.\n\n### COMPLIANCE SIGN-OFF:\nApproved (fallback)."
             }
 
-    async def _generate_audit_report(self, resolution_text: str) -> str:
+    async def _generate_audit_report(self, resolution_text: str, mock_mode: bool = False) -> str:
         """
         Uses Groq API to compile safety report (legacy fallback).
         """
         self.system_prompt = self._load_system_prompt()
-        if not groq_client:
+        if not groq_client or mock_mode:
             return (
                 "**EXECUTIVE SUMMARY:**\n"
                 "The target machine has experienced a critical telemetry spike. Automated emergency isolation has been successfully initiated.\n\n"
@@ -914,13 +1042,14 @@ class SafetyAuditorAdapter(SimpleAdapter[list]):
         )
 
         try:
-            chat_completion = await groq_client.chat.completions.create(
+            chat_completion = await safe_groq_completion(
                 messages=[
                     {"role": "system", "content": "You are a Safety Auditor and Compliance Inspector. Output the report strictly following instructions and using the required headers."},
                     {"role": "user", "content": prompt}
                 ],
-                model="llama-3.1-8b-instant",
-                temperature=0.0
+                preferred_model="llama-3.1-8b-instant",
+                temperature=0.0,
+                max_tokens=450
             )
             return chat_completion.choices[0].message.content
         except Exception as e:
@@ -1024,7 +1153,7 @@ class ExecutionAdapter(SimpleAdapter[list]):
             mentions=[self.forensic_id]
         )
 
-    async def _execute_containment(self, equipment_name: str, report_text: str) -> str:
+    async def _execute_containment(self, equipment_name: str, report_text: str, mock_mode: bool = False) -> str:
         from api.mock_database import ENTERPRISE_KNOWLEDGE_BASE
         spec = ENTERPRISE_KNOWLEDGE_BASE.get(equipment_name, "")
         
@@ -1037,7 +1166,7 @@ class ExecutionAdapter(SimpleAdapter[list]):
             "Confirm the telemetry has restabilized. Output a structured execution log prefixed with 'EXECUTION_STATUS:' showing steps, success, and observations."
         )
         
-        if not groq_client:
+        if not groq_client or mock_mode:
             return (
                 f"EQUIPMENT: {equipment_name}\n"
                 "STATUS: SUCCESS\n"
@@ -1048,13 +1177,14 @@ class ExecutionAdapter(SimpleAdapter[list]):
             )
         
         try:
-            chat_completion = await groq_client.chat.completions.create(
+            chat_completion = await safe_groq_completion(
                 messages=[
                     {"role": "system", "content": "You are an Automated Systems Operator. Generate the execution logs based on the approved report and DB specifications."},
                     {"role": "user", "content": prompt}
                 ],
-                model="llama-3.1-8b-instant",
-                temperature=0.0
+                preferred_model="llama-3.1-8b-instant",
+                temperature=0.0,
+                max_tokens=350
             )
             content = chat_completion.choices[0].message.content
             if "EXECUTION_STATUS:" in content:
@@ -1130,7 +1260,7 @@ class ForensicAdapter(SimpleAdapter[list]):
             mentions=[self.curator_id]
         )
 
-    async def _perform_investigation(self, room_history: str, execution_status: str) -> str:
+    async def _perform_investigation(self, room_history: str, execution_status: str, mock_mode: bool = False) -> str:
         prompt = (
             f"{self.system_prompt}\n\n"
             f"--- SWARM CHAT HISTORY ---\n"
@@ -1149,7 +1279,7 @@ class ForensicAdapter(SimpleAdapter[list]):
             "Do not include the prefix 'FORENSIC_REPORT:' in the completion body."
         )
 
-        if not groq_client:
+        if not groq_client or mock_mode:
             return (
                 "**INCIDENT TIMELINE:**\n"
                 "- 13:20:00: Critical alert triggered.\n"
@@ -1168,13 +1298,14 @@ class ForensicAdapter(SimpleAdapter[list]):
             )
 
         try:
-            chat_completion = await groq_client.chat.completions.create(
+            chat_completion = await safe_groq_completion(
                 messages=[
                     {"role": "system", "content": "You are a Forensic Investigator and Root Cause Analyst. Output a clean markdown report strictly using the required headers."},
                     {"role": "user", "content": prompt}
                 ],
-                model="llama-3.1-8b-instant",
-                temperature=0.0
+                preferred_model="llama-3.1-8b-instant",
+                temperature=0.0,
+                max_tokens=400
             )
             content = chat_completion.choices[0].message.content
             if "FORENSIC_REPORT:" in content:
@@ -1249,7 +1380,7 @@ class KnowledgeCuratorAdapter(SimpleAdapter[list]):
             mentions=[msg.sender_id]
         )
 
-    async def _curate_knowledge_base(self, equipment_name: str, forensic_report: str) -> str:
+    async def _curate_knowledge_base(self, equipment_name: str, forensic_report: str, mock_mode: bool = False) -> str:
         from api.mock_database import ENTERPRISE_KNOWLEDGE_BASE
         spec_before = ENTERPRISE_KNOWLEDGE_BASE.get(equipment_name, "None")
 
@@ -1271,16 +1402,17 @@ class KnowledgeCuratorAdapter(SimpleAdapter[list]):
         optimized_spec = spec_before
         changes_made = "No changes required."
 
-        if groq_client:
+        if groq_client and not mock_mode:
             try:
-                chat_completion = await groq_client.chat.completions.create(
+                chat_completion = await safe_groq_completion(
                     messages=[
                         {"role": "system", "content": "You are a Feedback & Learning Agent. You must output JSON only."},
                         {"role": "user", "content": prompt}
                     ],
-                    model="llama-3.1-8b-instant",
+                    preferred_model="llama-3.1-8b-instant",
                     response_format={"type": "json_object"},
-                    temperature=0.0
+                    temperature=0.0,
+                    max_tokens=400
                 )
                 res_json = json.loads(chat_completion.choices[0].message.content)
                 optimized_spec = res_json.get("optimized_spec", spec_before)
@@ -1327,7 +1459,7 @@ def create_curator_agent(agent_id: str, api_key: str) -> Agent:
 
 # --- Multi-Agent Swarm Orchestrator ---
 
-async def trigger_incident_async(alert_text: str, status_callback=None, delay: float = 0.1, live_mode: bool = True) -> str:
+async def trigger_incident_async(alert_text: str, status_callback=None, delay: float = 0.1, live_mode: bool = True, mock_mode: bool = False) -> str:
     """
     Orchestrates the multi-agent swarm workflow.
     Supports both offline simulation mode and online Band SDK Agent API interactions.
@@ -1368,7 +1500,7 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
     if status_callback:
         await status_callback("Coordinator Agent", "Parsing telemetry alert & identifying target equipment...")
     
-    equipment_name = await coordinator._identify_equipment(alert_text)
+    equipment_name = await coordinator._identify_equipment(alert_text, mock_mode=mock_mode)
     
     if status_callback:
         await status_callback("Coordinator Agent", f"Identified equipment: **{equipment_name}**")
@@ -1445,20 +1577,18 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
                 forensic_report = ""
                 learning_summary = ""
                 
-                # We'll poll using all agent tokens to ensure visibility of room messages
+                # We'll poll using all available agent tokens because the Agent API only returns messages that the specific agent is expected to process/received
                 poll_configs = []
-                if coordinator_token:
-                    poll_configs.append({"name": "Coordinator", "headers": {"x-api-key": coordinator_token}})
-                if analyst_token:
-                    poll_configs.append({"name": "Analyst", "headers": {"x-api-key": analyst_token}})
-                if auditor_token:
-                    poll_configs.append({"name": "Auditor", "headers": {"x-api-key": auditor_token}})
-                if execution_token:
-                    poll_configs.append({"name": "Execution", "headers": {"x-api-key": execution_token}})
-                if forensic_token:
-                    poll_configs.append({"name": "Forensic", "headers": {"x-api-key": forensic_token}})
-                if curator_token:
-                    poll_configs.append({"name": "Curator", "headers": {"x-api-key": curator_token}})
+                for name, token in [
+                    ("Coordinator", coordinator_token),
+                    ("Analyst", analyst_token),
+                    ("Auditor", auditor_token),
+                    ("Execution", execution_token),
+                    ("Forensic", forensic_token),
+                    ("Curator", curator_token),
+                ]:
+                    if token:
+                        poll_configs.append({"name": name, "headers": {"x-api-key": token}})
                 
                 while time.time() - start_time < timeout:
                     try:
@@ -1506,21 +1636,25 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
                                     safety_report = content.split("INCIDENT_REPORT:", 1)[1].strip()
                                     if status_callback:
                                         await status_callback("Safety Auditor Agent", "Safety audit approved! Finalized incident report. Requesting Execution Agent...")
+                                        await status_callback("Safety Auditor Agent", f"REPORT_SAFETY:{safety_report}")
                                 
                                 elif "EXECUTION_STATUS:" in content:
                                     execution_log = content.split("EXECUTION_STATUS:", 1)[1].strip()
                                     if status_callback:
                                         await status_callback("Execution Agent", f"Execution complete. Status: SUCCESS.\n{execution_log[:500]}...")
+                                        await status_callback("Execution Agent", f"REPORT_EXECUTION:{execution_log}")
                                 
                                 elif "FORENSIC_REPORT:" in content:
                                     forensic_report = content.split("FORENSIC_REPORT:", 1)[1].strip()
                                     if status_callback:
                                         await status_callback("Forensic Investigator Agent", "Forensic analysis completed! RCA Report generated.")
+                                        await status_callback("Forensic Investigator Agent", f"REPORT_DETECTIVE:{forensic_report}")
                                 
                                 elif "LEARNING_SUMMARY:" in content:
                                     learning_summary = content.split("LEARNING_SUMMARY:", 1)[1].strip()
                                     if status_callback:
                                         await status_callback("Knowledge Curator Agent", "Enterprise knowledge base curated with new learnings.")
+                                        await status_callback("Knowledge Curator Agent", f"REPORT_KNOWLEDGE:{learning_summary}")
                                     break
                             
                             if learning_summary:
@@ -1530,7 +1664,7 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
                             break
                     except Exception as poll_err:
                         logger.error(f"Error polling room messages: {poll_err}")
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(2.0)
                     
                 if not safety_report and not learning_summary:
                     elapsed = int(time.time() - start_time)
@@ -1571,25 +1705,28 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
         
     else:
         # --- OFFLINE SIMULATION SANDBOX MODE (Iterative Safety Verification Loop) ---
+        if mock_mode:
+            delay = 0.0
+            
         room_id = "simulated_room_123"
         if status_callback:
             await status_callback("Coordinator Agent", f"Incident room **{room_id}** created. Systems Analyst added.")
-            await asyncio.sleep(delay)
+            await asyncio.sleep(min(delay, 0.2))
 
         # Step 2: Systems Analyst generates initial resolution
         from api.mock_database import ENTERPRISE_KNOWLEDGE_BASE
         kb_text = ENTERPRISE_KNOWLEDGE_BASE.get(equipment_name)
         if not kb_text:
-            kb_text = await analyst._ingest_equipment_spec_async(equipment_name, status_callback=status_callback)
+            kb_text = await analyst._ingest_equipment_spec_async(equipment_name, status_callback=status_callback, mock_mode=mock_mode)
         else:
             if status_callback:
                 await status_callback("Systems Analyst Agent", f"Reading specifications & critical thresholds for **{equipment_name}**...")
-                await asyncio.sleep(delay)
+                await asyncio.sleep(min(delay, 0.2))
 
         if status_callback:
             await status_callback("Systems Analyst Agent", "Formulating step-by-step containment & resolution sequence...")
 
-        resolution = await analyst._generate_resolution(equipment_name, kb_text, alert_text)
+        resolution = await analyst._generate_resolution(equipment_name, kb_text, alert_text, mock_mode=mock_mode)
 
         if status_callback:
             await status_callback("Systems Analyst Agent", "Technical resolution generated. Safety Auditor added for compliance review.")
@@ -1605,14 +1742,14 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
                     await status_callback("Safety Auditor Agent", "Auditing technical resolution against safety regulations & enterprise compliance rules...")
                 else:
                     await status_callback("Safety Auditor Agent", f"Re-auditing revised resolution (Attempt {attempt + 1}/{MAX_REJECTIONS + 1})...")
-                await asyncio.sleep(delay)
+                await asyncio.sleep(min(delay, 0.2))
 
             # Perform structured safety audit
-            audit_result = await auditor._audit_resolution(resolution, kb_text)
+            audit_result = await auditor._audit_resolution(resolution, kb_text, mock_mode=mock_mode)
 
             if audit_result["safe"]:
                 # APPROVED — generate final report
-                report = audit_result.get("report") or await auditor._generate_audit_report(resolution)
+                report = audit_result.get("report") or await auditor._generate_audit_report(resolution, mock_mode=mock_mode)
                 if status_callback:
                     if attempt > 0:
                         await status_callback("Safety Auditor Agent", f"✅ Resolution APPROVED after {attempt} revision(s). All safety violations resolved.")
@@ -1633,7 +1770,7 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
 
                     # Analyst revises the resolution
                     resolution = await analyst._generate_revised_resolution(
-                        equipment_name, kb_text, alert_text, resolution, feedback
+                        equipment_name, kb_text, alert_text, resolution, feedback, mock_mode=mock_mode
                     )
 
                     if status_callback:
@@ -1645,7 +1782,7 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
                         await status_callback("Safety Auditor Agent", f"⚠️ Maximum revision attempts ({MAX_REJECTIONS}) reached. Force-approving with safety warnings.")
                         await asyncio.sleep(delay)
 
-                    raw_report = audit_result.get("report") or await auditor._generate_audit_report(resolution)
+                    raw_report = audit_result.get("report") or await auditor._generate_audit_report(resolution, mock_mode=mock_mode)
                     report = (
                         "⚠️ **CRITICAL WARNING: SAFETY AUDIT LIMIT EXCEEDED**\n"
                         f"The Safety Auditor detected outstanding compliance violations that could not be fully resolved "
@@ -1656,27 +1793,28 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
                     break
 
         if not report:
-            report = await auditor._generate_audit_report(resolution)
+            report = await auditor._generate_audit_report(resolution, mock_mode=mock_mode)
 
         if status_callback:
             await status_callback("Safety Auditor Agent", "Finalizing official incident report. Compliance sign-off complete.")
+            await asyncio.sleep(delay)
+            await status_callback("Safety Auditor Agent", f"REPORT_SAFETY:{report}")
             await asyncio.sleep(delay)
 
         # Step 4: Execution Agent Executes Approved Plan
         if status_callback:
             await status_callback("Execution Agent", "Approved plan received. Triggering automated system containment sequence...")
-            await asyncio.sleep(delay)
 
-        execution_log = await executor._execute_containment(equipment_name, report)
+        execution_log = await executor._execute_containment(equipment_name, report, mock_mode=mock_mode)
 
         if status_callback:
             await status_callback("Execution Agent", f"Execution complete. Status: SUCCESS.\n{execution_log}")
-            await asyncio.sleep(delay)
+            await status_callback("Execution Agent", f"REPORT_EXECUTION:{execution_log}")
 
-        # Step 5: Forensic Investigator Agent Performs Root Cause Analysis
+        # Step 5+6: Forensic Investigator + Knowledge Curator run concurrently
         if status_callback:
             await status_callback("Forensic Investigator Agent", "Execution logs received. Commencing forensic timeline analysis and root cause investigation...")
-            await asyncio.sleep(delay)
+            await status_callback("Knowledge Curator Agent", "Analyzing execution outcome for knowledge base optimization...")
 
         # Mock room history for offline analysis
         simulated_history = (
@@ -1685,22 +1823,18 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
             f"Safety Auditor Agent: Approved INCIDENT_REPORT generated.\n\n"
             f"Execution Agent: EXECUTION_STATUS log submitted."
         )
-        forensic_report = await forensic._perform_investigation(simulated_history, execution_log)
+
+        # Run forensic and curator concurrently to save ~15-20s
+        forensic_report, learning_summary = await asyncio.gather(
+            forensic._perform_investigation(simulated_history, execution_log, mock_mode=mock_mode),
+            curator._curate_knowledge_base(equipment_name, execution_log, mock_mode=mock_mode)
+        )
 
         if status_callback:
-            await status_callback("Forensic Investigator Agent", "RCA Report finalized. Handing over to Knowledge Curator for self-learning DB optimization...")
-            await asyncio.sleep(delay)
-
-        # Step 6: Knowledge Curator Agent optimizes DB
-        if status_callback:
-            await status_callback("Knowledge Curator Agent", "Analyzing forensic report to curate and optimize enterprise blueprints...")
-            await asyncio.sleep(delay)
-
-        learning_summary = await curator._curate_knowledge_base(equipment_name, forensic_report)
-
-        if status_callback:
+            await status_callback("Forensic Investigator Agent", "RCA Report finalized.")
+            await status_callback("Forensic Investigator Agent", f"REPORT_DETECTIVE:{forensic_report}")
             await status_callback("Knowledge Curator Agent", "Curation complete. Enterprise blueprints updated successfully.")
-            await asyncio.sleep(delay)
+            await status_callback("Knowledge Curator Agent", f"REPORT_KNOWLEDGE:{learning_summary}")
 
         # Combine reports for the user
         combined_report = (
@@ -1719,7 +1853,7 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
 
         return combined_report
 
-def trigger_incident(alert_text: str, status_callback=None, delay: float = 0.1, live_mode: bool = True) -> str:
+def trigger_incident(alert_text: str, status_callback=None, delay: float = 0.1, live_mode: bool = True, mock_mode: bool = False) -> str:
     """
     Synchronous entrypoint wrapper for Streamlit.
     """
@@ -1729,6 +1863,6 @@ def trigger_incident(alert_text: str, status_callback=None, delay: float = 0.1, 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
-    return loop.run_until_complete(trigger_incident_async(alert_text, status_callback, delay, live_mode))
+    return loop.run_until_complete(trigger_incident_async(alert_text, status_callback, delay, live_mode, mock_mode))
 
 

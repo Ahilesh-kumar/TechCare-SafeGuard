@@ -30,11 +30,15 @@ logger = logging.getLogger("BandAgentRunner")
 
 load_dotenv()
 
-async def run_agent_with_retry(name, agent_factory, *args, **kwargs):
+async def run_agent_with_retry(name, agent_factory, *args, startup_delay: float = 0.0, **kwargs):
     """
     Runs an agent with an exponential backoff reconnect loop.
     Prevents temporary network issues or platform restarts from crashing the runner.
     """
+    if startup_delay > 0:
+        logger.info(f"Staggering startup: waiting {startup_delay}s before starting agent '{name}'...")
+        await asyncio.sleep(startup_delay)
+
     backoff = 2
     while True:
         agent = None
@@ -57,9 +61,20 @@ async def run_agent_with_retry(name, agent_factory, *args, **kwargs):
                     await agent.stop()
                 except Exception:
                     pass
-            logger.info(f"Retrying connection for agent '{name}' in {backoff} seconds...")
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 60)  # Cap backoff at 60 seconds
+            
+            # Check for rate-limiting, supersede, or session already connected errors
+            err_str = str(e).lower()
+            if "rate-limit" in err_str or "429" in err_str or "supersede" in err_str or "already_connected" in err_str or "session.already_connected" in err_str:
+                # Set a much longer sleep time (45-60 seconds) to avoid connection wars and allow other instances to stay stable
+                sleep_time = 45.0
+                logger.warning(f"⚠️ Agent '{name}' hit a connection conflict or rate-limit (supersede/already_connected).")
+                logger.warning(f"  To avoid connection wars, backing off for {sleep_time} seconds before retrying...")
+            else:
+                sleep_time = backoff
+                backoff = min(backoff * 2, 60)
+                
+            logger.info(f"Retrying connection for agent '{name}' in {sleep_time} seconds...")
+            await asyncio.sleep(sleep_time)
 
 async def main():
     # Load IDs from environment
@@ -117,21 +132,24 @@ async def main():
             create_coordinator_agent, 
             agent_id=coordinator_id, 
             api_key=coordinator_token, 
-            analyst_id=analyst_id
+            analyst_id=analyst_id,
+            startup_delay=0.0
         ),
         run_agent_with_retry(
             "Systems Analyst", 
             create_analyst_agent, 
             agent_id=analyst_id, 
             api_key=analyst_token, 
-            auditor_id=auditor_id
+            auditor_id=auditor_id,
+            startup_delay=1.0
         ),
         run_agent_with_retry(
             "Safety Auditor", 
             create_auditor_agent, 
             agent_id=auditor_id, 
             api_key=auditor_token,
-            execution_id=execution_id or "execution_agent"
+            execution_id=execution_id or "execution_agent",
+            startup_delay=2.0
         )
     ]
 
@@ -143,7 +161,8 @@ async def main():
                 create_execution_agent,
                 agent_id=execution_id,
                 api_key=execution_token,
-                forensic_id=forensic_id
+                forensic_id=forensic_id,
+                startup_delay=3.0
             )
         )
     else:
@@ -157,7 +176,8 @@ async def main():
                 create_forensic_agent,
                 agent_id=forensic_id,
                 api_key=forensic_token,
-                curator_id=curator_id
+                curator_id=curator_id,
+                startup_delay=4.0
             )
         )
     else:
@@ -170,7 +190,8 @@ async def main():
                 "Knowledge Curator Agent",
                 create_curator_agent,
                 agent_id=curator_id,
-                api_key=curator_token
+                api_key=curator_token,
+                startup_delay=5.0
             )
         )
     else:
@@ -191,6 +212,16 @@ async def main():
         print("=" * 60)
 
 if __name__ == "__main__":
+    import socket
+    try:
+        # Use port 18274 as a singleton lock
+        _lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _lock_socket.bind(("127.0.0.1", 18274))
+    except socket.error:
+        print("\n❌ Error: Another instance of run_agents.py is already running!")
+        print("Please stop the existing instance before starting a new one.")
+        sys.exit(1)
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

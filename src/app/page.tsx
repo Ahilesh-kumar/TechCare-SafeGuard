@@ -31,6 +31,7 @@ import {
   Shield,
   Search,
   Brain,
+  Loader2,
 } from "lucide-react";
 
 interface SwarmLog {
@@ -99,6 +100,10 @@ export default function Home() {
   const [alertInput, setAlertInput] = useState("");
   const [swarmLogs, setSwarmLogs] = useState<SwarmLog[]>([]);
   const [finalReport, setFinalReport] = useState("");
+  const [safetyReport, setSafetyReport] = useState("");
+  const [executionReport, setExecutionReport] = useState("");
+  const [detectiveReport, setDetectiveReport] = useState("");
+  const [knowledgeReport, setKnowledgeReport] = useState("");
   const [activeEquipment, setActiveEquipment] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -147,8 +152,16 @@ export default function Home() {
   const [scanResults, setScanResults] = useState<any[]>([]);
 
   const parsedReport = useMemo(() => {
+    if (isRunning) {
+      return {
+        safety: safetyReport,
+        execution: executionReport,
+        detective: detectiveReport,
+        knowledge: knowledgeReport,
+      };
+    }
     return parseSwarmReport(finalReport);
-  }, [finalReport]);
+  }, [isRunning, finalReport, safetyReport, executionReport, detectiveReport, knowledgeReport]);
 
   const parsedHistoryReport = useMemo(() => {
     return selectedHistoryItem ? parseSwarmReport(selectedHistoryItem.report) : null;
@@ -157,185 +170,265 @@ export default function Home() {
   const logsEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Helper to parse markdown bold syntax **word**
-  const renderMarkdownText = (text: string) => {
-    if (!text) return "";
-    const parts = text.split("**");
-    return parts.map((part, i) => {
-      if (i % 2 === 1) {
-        return <strong key={i} className="font-extrabold text-slate-955 bg-slate-100 px-1 py-0.5 rounded">{part}</strong>;
+  // Helper to parse markdown inline styles: **bold** and *italic*
+  const renderMarkdownText = (text: string): React.ReactNode => {
+    if (!text) return null;
+    // Split on ** first, then handle * for italic
+    const boldParts = text.split(/\*\*/);
+    return boldParts.map((boldPart, bi) => {
+      if (bi % 2 === 1) {
+        // Inside ** ... ** — render as bold, strip any stray * chars
+        return (
+          <strong key={`b${bi}`} className="font-bold text-slate-800">
+            {boldPart.replace(/\*/g, "")}
+          </strong>
+        );
       }
-      return part;
+      // Outside bold: split on single * for italic
+      const italicParts = boldPart.split(/\*/);
+      return italicParts.map((part, ii) => (
+        ii % 2 === 1
+          ? <em key={`i${bi}-${ii}`} className="italic text-slate-600">{part}</em>
+          : <span key={`t${bi}-${ii}`}>{part}</span>
+      ));
     });
   };
 
-  // Helper to parse dynamic incident report styled like Gemini document
+  // Normalize raw report text: handles double-escaped \n and Python-dict-like strings
+  const normalizeReportText = (text: string): string => {
+    if (!text) return text;
+    // Fix double-escaped newlines from JSON serialization
+    let normalized = text.replace(/\\n/g, "\n").replace(/\\t/g, "  ");
+    // Detect Python-dict-like format: {'KEY': 'value', ...}
+    const stripped = normalized.trim();
+    if (stripped.startsWith("{") && stripped.endsWith("}") && /['"][A-Z][A-Z &\-:]+['"]/.test(stripped)) {
+      const pairs: [string, string][] = [];
+      const pairRegex = /['"]([A-Z][A-Z &\-:/]+)['"]\s*:\s*['"]([^'"]*)['"]/g;
+      let m: RegExpExecArray | null;
+      while ((m = pairRegex.exec(stripped)) !== null) {
+        pairs.push([m[1].trim(), m[2].replace(/\\n/g, "\n").trim()]);
+      }
+      if (pairs.length > 0) {
+        return pairs.map(([k, v]) => `**${k.toLowerCase().replace(/\b\w/g, c => c.toUpperCase())}:**\n${v}`).join("\n\n");
+      }
+    }
+    return normalized;
+  };
+
+  const formatHeading = (heading: string): string => {
+    const clean = heading.replace(/:/g, "").trim().toUpperCase();
+    if (clean === "EXECUTIVE SUMMARY") return "Executive Summary";
+    if (clean === "IMPORTANT STEPS HIGHLIGHTED" || clean === "KEY INTERVENTION STEPS") return "Key Intervention Steps";
+    if (clean === "STEP-BY-STEP ACTION REQUIRED" || clean === "STEP-BY-STEP ACTION") return "Step-by-step Action Required";
+    if (clean === "SAFETY PRECAUTIONS") return "Safety Precautions";
+    if (clean === "CONCLUSION" || clean === "CONCLUSION & COMPLIANCE") return "Conclusion & Compliance";
+    if (clean === "COMPLIANCE SIGN-OFF") return "Compliance Sign-off";
+    return clean.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+  };
+
+  // Gemini-style document renderer for the Safety Incident Report
   const renderReportDocument = (reportText: string, equipmentName?: string) => {
     if (!reportText) return null;
+    const text = normalizeReportText(reportText);
 
-    const getFontSizeClasses = () => {
-      switch (reportFontSize) {
-        case "sm":
-          return {
-            heading: "text-xs font-bold text-slate-800 tracking-wide mt-4 mb-1.5",
-            paragraph: "text-[11px] text-slate-600 leading-relaxed mb-3 font-normal",
-            item: "text-[11px] text-slate-600 leading-relaxed font-normal",
-            list: "space-y-1.5 my-2.5",
-            title: "text-sm font-semibold text-slate-900 border-b border-slate-150 pb-3 mb-4 tracking-tight"
-          };
-        case "lg":
-          return {
-            heading: "text-base font-bold text-slate-800 tracking-wide mt-7 mb-2.5",
-            paragraph: "text-sm text-slate-600 leading-relaxed mb-5 font-normal",
-            item: "text-sm text-slate-600 leading-relaxed font-normal",
-            list: "space-y-3.5 my-4",
-            title: "text-xl font-bold text-slate-900 border-b border-slate-150 pb-5 mb-7 tracking-tight"
-          };
-        case "base":
-        default:
-          return {
-            heading: "text-sm font-bold text-slate-800 tracking-wide mt-6 mb-2",
-            paragraph: "text-xs text-slate-600 leading-relaxed mb-4 font-normal",
-            item: "text-xs text-slate-600 leading-relaxed font-normal",
-            list: "space-y-2.5 my-3",
-            title: "text-lg font-medium text-slate-900 border-b border-slate-150 pb-4 mb-6 tracking-tight"
-          };
-      }
+    const sizeMap = {
+      sm:   { title: "text-base font-bold text-slate-900", heading: "text-sm font-bold text-slate-850 mt-5 mb-1.5", para: "text-[11px] text-slate-700 leading-relaxed mb-3", bullet: "text-[11px] text-slate-700 leading-relaxed", divider: "my-3" },
+      base: { title: "text-lg font-bold text-slate-900", heading: "text-sm font-bold text-slate-850 mt-6 mb-2",   para: "text-xs text-slate-700 leading-relaxed mb-3",    bullet: "text-xs text-slate-700 leading-relaxed",    divider: "my-4" },
+      lg:   { title: "text-xl font-bold text-slate-900", heading: "text-base font-bold text-slate-850 mt-7 mb-3", para: "text-sm text-slate-700 leading-relaxed mb-4",    bullet: "text-sm text-slate-700 leading-relaxed",    divider: "my-5" },
     };
+    const sz = sizeMap[reportFontSize] || sizeMap.base;
 
-    const fs = getFontSizeClasses();
+    const reportTitle = equipmentName
+      ? `Incident Report: ${equipmentName} Mitigation`
+      : selectedBlueprint
+      ? `Incident Report: ${selectedBlueprint} Mitigation`
+      : "Incident Report: Swarm Safety Mitigation";
 
-    // Normalize newlines and split by line
-    const lines = reportText.split("\n");
-    const renderedElements: React.ReactNode[] = [];
-    let listBuffer: React.ReactNode[] = [];
-    
-    const flushList = (key: number) => {
-      if (listBuffer.length === 0) return null;
-      const list = (
-        <div key={`list-${key}`} className={`${fs.list}`}>
-          {[...listBuffer]}
-        </div>
+    const lines = text.split("\n");
+    const elements: React.ReactNode[] = [];
+    let listBuf: { prefix: string; content: string; num: boolean }[] = [];
+
+    const flushList = (key: string) => {
+      if (!listBuf.length) return;
+      elements.push(
+        <ul key={`ul-${key}`} className="space-y-2 my-2 pl-1">
+          {listBuf.map((item, i) => (
+            <li key={i} className="flex items-start gap-2.5">
+              <span className={`shrink-0 mt-0.5 ${item.num ? "text-[10px] w-4 text-right font-semibold text-slate-400" : "text-slate-350 text-xs leading-none"}`}>
+                {item.num ? item.prefix : "○"}
+              </span>
+              <span className={sz.bullet}>{renderMarkdownText(item.content)}</span>
+            </li>
+          ))}
+        </ul>
       );
-      listBuffer = [];
-      return list;
+      listBuf = [];
     };
 
-    lines.forEach((line, idx) => {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        // Flush any active list
-        if (listBuffer.length > 0) {
-          renderedElements.push(flushList(idx));
-        }
-        return;
-      }
+    lines.forEach((rawLine, idx) => {
+      const line = rawLine.trim();
+      if (!line) { flushList(`e${idx}`); return; }
 
-      // Check for headings (e.g. ### EXECUTIVE SUMMARY or similar without inline text)
-      if (trimmed.startsWith("#") || (trimmed.startsWith("###") && !trimmed.includes(":") && trimmed.length < 60)) {
-        // Flush any active list
-        if (listBuffer.length > 0) {
-          renderedElements.push(flushList(idx));
-        }
-        
-        // Clean up hashes and colons at the end of heading
-        const headingText = trimmed.replace(/^#+\s+/, "").replace(/:$/, "").trim();
-        renderedElements.push(
-          <h3 key={idx} className={`${fs.heading} first:mt-2`}>
-            {headingText}
-          </h3>
-        );
-        return;
-      }
+      if (/^---+$/.test(line)) { flushList(`d${idx}`); elements.push(<hr key={`hr${idx}`} className={`border-slate-200 ${sz.divider}`} />); return; }
+      if (/^#{1,6}\s/.test(line) && line.replace(/^#+\s*/, "").length < 3) return;
 
-      // Check if line starts with bullet indicators
-      const isBullet = trimmed.startsWith("-") || trimmed.startsWith("*") || trimmed.startsWith("o");
-      const isNumbered = /^\d+\./.test(trimmed);
-
-      if (isBullet || isNumbered) {
-        let prefix = "◦";
-        let content = trimmed;
-
-        if (trimmed.startsWith("-") || trimmed.startsWith("*")) {
-          content = trimmed.slice(1).trim();
-        } else if (trimmed.startsWith("o")) {
-          content = trimmed.slice(1).trim();
-        } else {
-          const match = trimmed.match(/^(\d+)\.\s+(.*)/);
-          if (match) {
-            prefix = match[1] + ".";
-            content = match[2];
-          }
-        }
-
-        listBuffer.push(
-          <div key={`item-${idx}`} className={`flex items-start gap-3 pl-2 leading-relaxed font-normal ${fs.item}`}>
-            <span className={`text-slate-400 font-bold select-none shrink-0 ${isNumbered ? "text-[10px] w-4 text-right" : ""}`}>
-              {prefix}
-            </span>
-            <div className="flex-1 font-normal text-slate-600">{renderMarkdownText(content)}</div>
-          </div>
-        );
-        return;
-      }
-
-      // If we reach here, it's a normal text line
-      // Flush any active list
-      if (listBuffer.length > 0) {
-        renderedElements.push(flushList(idx));
-      }
-
-      // Check if this line is actually an inline header (e.g. starts with "### EXECUTIVE SUMMARY:")
-      if (trimmed.startsWith("###")) {
-        const headerMatch = trimmed.match(/^###\s*([^:]+):\s*(.*)/);
-        if (headerMatch) {
-          const headingText = headerMatch[1].trim();
-          const remainingText = headerMatch[2].trim();
-          
-          renderedElements.push(
-            <h3 key={`h-${idx}`} className={`${fs.heading}`}>
-              {headingText}
-            </h3>
+      const headingLine = line.replace(/^[-*•○◦■\s]+/, "");
+      const sectionMatch = headingLine.match(/^\*\*([^*]+?):\*\*(.*)$/) || headingLine.match(/^([A-Z][A-Z ,&'\-/]{2,}):\s*(.*)$/);
+      if (sectionMatch) {
+        flushList(`s${idx}`);
+        const label = sectionMatch[1].trim();
+        const rest  = (sectionMatch[2] || "").trim();
+        const isSection = /^[A-Z0-9 &'\-/:]+$/.test(label) || headingLine.startsWith("**");
+        if (isSection) {
+          elements.push(
+            <div key={`sec${idx}`}>
+              <h3 className={sz.heading}>{formatHeading(label)}</h3>
+              {rest && <p className={sz.para}>{renderMarkdownText(rest)}</p>}
+            </div>
           );
-          
-          if (remainingText) {
-            renderedElements.push(
-              <p key={`p-${idx}`} className={`${fs.paragraph}`}>
-                {renderMarkdownText(remainingText)}
-              </p>
-            );
-          }
           return;
         }
       }
 
-      // Plain paragraph line
-      renderedElements.push(
-        <p key={idx} className={`${fs.paragraph}`}>
-          {renderMarkdownText(trimmed)}
-        </p>
-      );
+      if (/^#{1,3}\s/.test(line)) {
+        flushList(`h${idx}`);
+        const label = line.replace(/^#+\s*/, "").replace(/:$/, "").trim();
+        elements.push(<h3 key={`mh${idx}`} className={sz.heading}>{formatHeading(label)}</h3>);
+        return;
+      }
+
+      const bulletMatch = line.match(/^[-*•○◦■]\s+(.+)/);
+      const numMatch    = line.match(/^(\d+)\.\s+(.+)/);
+      if (bulletMatch) { listBuf.push({ prefix: "○", content: bulletMatch[1], num: false }); return; }
+      if (numMatch)    { listBuf.push({ prefix: numMatch[1] + ".", content: numMatch[2], num: true }); return; }
+
+      flushList(`p${idx}`);
+      elements.push(<p key={`p${idx}`} className={sz.para}>{renderMarkdownText(line)}</p>);
     });
-
-    // Flush any remaining list items
-    if (listBuffer.length > 0) {
-      renderedElements.push(flushList(lines.length));
-    }
-
-    const reportTitle = equipmentName 
-      ? `Incident Report: ${equipmentName} Mitigation`
-      : selectedBlueprint 
-      ? `Incident Report: ${selectedBlueprint} Mitigation` 
-      : "Incident Report: Swarm Safety Mitigation";
+    flushList("end");
 
     return (
-      <div className="space-y-4 text-left">
-        <h2 className={`${fs.title}`}>
-          {reportTitle}
-        </h2>
-        <div className="space-y-1">
-          {renderedElements}
-        </div>
+      <div className="text-left">
+        <h2 className={`${sz.title} mb-4 pb-4 border-b border-slate-200`}>{reportTitle}</h2>
+        <div className="space-y-0.5">{elements}</div>
+      </div>
+    );
+  };
+
+  // Rich text renderer for Forensic, Knowledge, Execution panels
+  const renderRichPanel = (text: string) => {
+    if (!text) return null;
+    const normalized = normalizeReportText(text);
+    const lines = normalized.split("\n");
+    const elements: React.ReactNode[] = [];
+    let listBuf: { prefix: string; content: string; num: boolean }[] = [];
+    let inCodeBlock = false;
+    let codeLines: string[] = [];
+
+    const flushList = (key: string) => {
+      if (!listBuf.length) return;
+      elements.push(
+        <ul key={`ul-${key}`} className="space-y-1.5 my-2 pl-1">
+          {listBuf.map((item, i) => (
+            <li key={i} className="flex items-start gap-2">
+              <span className={`shrink-0 mt-0.5 ${item.num ? "text-[9px] w-4 text-right font-semibold text-slate-400" : "text-slate-350 text-xs leading-none"}`}>
+                {item.num ? item.prefix : "◦"}
+              </span>
+              <span className="text-[11px] text-slate-700 leading-relaxed">{renderMarkdownText(item.content)}</span>
+            </li>
+          ))}
+        </ul>
+      );
+      listBuf = [];
+    };
+
+    const flushCode = (key: string) => {
+      if (!codeLines.length) return;
+      elements.push(
+        <pre key={`code-${key}`} className="bg-slate-900 text-emerald-400 font-mono text-[10px] p-3 rounded-lg border border-slate-800 leading-relaxed overflow-x-auto my-2 whitespace-pre-wrap">
+          {codeLines.join("\n")}
+        </pre>
+      );
+      codeLines = [];
+      inCodeBlock = false;
+    };
+
+    lines.forEach((rawLine, idx) => {
+      const line = rawLine;
+      const trimmed = line.trim();
+
+      if (trimmed.startsWith("```")) {
+        if (inCodeBlock) { flushCode(`c${idx}`); } else { flushList(`bc${idx}`); inCodeBlock = true; }
+        return;
+      }
+      if (inCodeBlock) { codeLines.push(line); return; }
+
+      if (!trimmed) { flushList(`e${idx}`); return; }
+      if (/^---+$/.test(trimmed)) { flushList(`d${idx}`); elements.push(<hr key={`hr${idx}`} className="border-slate-100 my-2" />); return; }
+
+      const headingLine = trimmed.replace(/^[-*•○◦■\s]+/, "");
+      const secMatch = headingLine.match(/^\*\*([^*]+?):\*\*(.*)$/);
+      const h3Match  = /^#{1,3}\s/.test(trimmed);
+      if (secMatch) {
+        flushList(`s${idx}`);
+        const label = secMatch[1].trim();
+        const rest  = (secMatch[2] || "").trim();
+        elements.push(
+          <div key={`sec${idx}`} className="mt-3 mb-1">
+            <h4 className="text-[11px] font-bold text-slate-900 font-sans tracking-tight">
+              {formatHeading(label)}
+            </h4>
+            {rest && <p className="text-[11px] text-slate-650 leading-relaxed mt-0.5">{renderMarkdownText(rest)}</p>}
+          </div>
+        );
+        return;
+      }
+      if (h3Match) {
+        flushList(`h${idx}`);
+        const label = trimmed.replace(/^#+\s*/, "").replace(/:$/, "").trim();
+        elements.push(<h4 key={`h${idx}`} className="text-[11px] font-bold text-slate-900 font-sans tracking-tight mt-3 mb-1">{formatHeading(label)}</h4>);
+        return;
+      }
+
+      if (/^\*\*\[.*\]\*\*|^Step \d+:|^\[ACTUATOR/.test(trimmed)) {
+        flushList(`al${idx}`);
+        elements.push(<p key={`al${idx}`} className="text-[11px] font-mono text-emerald-400 bg-slate-900 px-2 py-0.5 rounded my-0.5">{trimmed.replace(/\*\*/g, "")}</p>);
+        return;
+      }
+
+      const bulletMatch = trimmed.match(/^[-*•○◦■]\s+(.+)/);
+      const numMatch    = trimmed.match(/^(\d+)\.\s+(.+)/);
+      if (bulletMatch) { listBuf.push({ prefix: "◦", content: bulletMatch[1], num: false }); return; }
+      if (numMatch)    { listBuf.push({ prefix: numMatch[1] + ".", content: numMatch[2], num: true }); return; }
+
+      flushList(`p${idx}`);
+      elements.push(<p key={`p${idx}`} className="text-[11px] text-slate-600 leading-relaxed mb-1">{renderMarkdownText(trimmed)}</p>);
+    });
+    flushList("end");
+    flushCode("end");
+
+    return <div className="space-y-0">{elements}</div>;
+  };
+
+  const renderExecutionLogs = (executionText: string) => {
+    if (!executionText) return null;
+    return (
+      <div className="space-y-1">
+        {executionText.split("\n").filter(Boolean).map((line, i) => {
+          const isStep = /^\*\*\[|^\[ACTUATOR|^Step \d+:|^--/.test(line.trim());
+          const isSuc  = /SUCCESS|CONFIRMED|COMPLETE/.test(line);
+          const isFail = /FAIL|ERROR|REJECT/.test(line);
+          return (
+            <div key={i} className={`font-mono text-[10px] leading-relaxed px-3 py-0.5 rounded ${
+              isSuc  ? "text-emerald-400 bg-slate-900" :
+              isFail ? "text-red-400 bg-slate-900" :
+              isStep ? "text-cyan-300 bg-slate-900 font-bold" :
+              "text-slate-300 bg-slate-900"
+            }`}>
+              {line.replace(/\*\*/g, "")}
+            </div>
+          );
+        })}
       </div>
     );
   };
@@ -468,6 +561,10 @@ export default function Home() {
     setIsRunning(true);
     setSwarmLogs([]);
     setFinalReport("");
+    setSafetyReport("");
+    setExecutionReport("");
+    setDetectiveReport("");
+    setKnowledgeReport("");
     setActiveEquipment("");
     setErrorMsg("");
     setElapsedTime(0);
@@ -475,13 +572,15 @@ export default function Home() {
 
     try {
       const isLive = networkMode === "Live Band.ai Network";
+      const isMockInstant = networkMode === "Offline Mock (Instant)";
       const response = await fetch("/api/trigger", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           alert_text: textToProcess,
-          delay: stepDelay,
+          delay: isMockInstant ? 0 : stepDelay,
           live_mode: isLive,
+          mock_mode: isMockInstant,
         }),
       });
 
@@ -521,8 +620,24 @@ export default function Home() {
                     setActiveEquipment(equip);
                   } catch (e) {}
                 }
+              } else if (eventData.type === "report_part") {
+                if (eventData.part === "safety") {
+                  setSafetyReport(eventData.content);
+                  setResultsView("report");
+                } else if (eventData.part === "execution") {
+                  setExecutionReport(eventData.content);
+                } else if (eventData.part === "detective") {
+                  setDetectiveReport(eventData.content);
+                } else if (eventData.part === "knowledge") {
+                  setKnowledgeReport(eventData.content);
+                }
               } else if (eventData.type === "report") {
                 setFinalReport(eventData.report);
+                const parsed = parseSwarmReport(eventData.report);
+                setSafetyReport(parsed.safety);
+                setExecutionReport(parsed.execution);
+                setDetectiveReport(parsed.detective);
+                setKnowledgeReport(parsed.knowledge);
                 setResultsView("report");
               } else if (eventData.type === "error") {
                 setErrorMsg(eventData.message);
@@ -683,14 +798,295 @@ export default function Home() {
     alert("Safety Incident Report copied to clipboard!");
   };
 
+  // Shared PDF generator — auto-downloads without print dialog
+  const generatePDF = async (reportText: string, equipment: string, timestamp?: string) => {
+    const { jsPDF } = await import("jspdf");
+    const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const margin = 20;
+    const contentW = pageW - margin * 2;
+    let y = 0;
+
+    // ── Colours ──────────────────────────────────────────────
+    const BLUE    = [11,  87, 208] as const;
+    const DARK    = [15,  23,  42] as const;
+    const BODY    = [51,  65,  85] as const;
+    const MUTED   = [100, 116, 139] as const;
+    const LIGHT   = [241, 245, 249] as const;
+    const WHITE   = [255, 255, 255] as const;
+    const DIVIDER = [226, 232, 240] as const;
+
+    const setFill = ([r,g,b]: readonly number[]) => doc.setFillColor(r,g,b);
+    const setDraw = ([r,g,b]: readonly number[]) => doc.setDrawColor(r,g,b);
+    const setTxt  = ([r,g,b]: readonly number[]) => doc.setTextColor(r,g,b);
+
+    const addPage = () => { doc.addPage(); y = margin + 6; };
+    const checkY  = (h: number) => { if (y + h > pageH - 18) addPage(); };
+
+    interface Segment {
+      text: string;
+      isBold: boolean;
+    }
+
+    const parseTokens = (txt: string) => {
+      const parts = txt.split(/\*\*([^*]+?)\*\?/g);
+      return parts.map((part, index) => ({
+        text: part,
+        isBold: index % 2 === 1
+      })).filter(t => t.text !== "");
+    };
+
+    const writeWrappedInlineText = (
+      text: string,
+      startX: number,
+      width: number,
+      lineHeight: number,
+      prefixInfo?: { type: "bullet" | "number"; numStr?: string }
+    ) => {
+      const tokens = parseTokens(text);
+      const segments: Segment[] = [];
+      tokens.forEach(tok => {
+        const chunks = tok.text.split(/(\s+)/).filter(Boolean);
+        chunks.forEach(chunk => {
+          segments.push({ text: chunk, isBold: tok.isBold });
+        });
+      });
+
+      let currentLine: Segment[] = [];
+      let currentW = 0;
+      let isFirstLine = true;
+
+      const flushCurrentLine = () => {
+        if (currentLine.length === 0) return;
+        checkY(lineHeight);
+
+        if (isFirstLine && prefixInfo) {
+          if (prefixInfo.type === "bullet") {
+            setFill(MUTED);
+            doc.circle(margin + 3.5, y - 1.2, 0.7, "F");
+          } else if (prefixInfo.type === "number" && prefixInfo.numStr) {
+            doc.setFont("helvetica", "bold");
+            setTxt(MUTED);
+            doc.text(prefixInfo.numStr, margin + 3, y);
+            doc.setFont("helvetica", "normal");
+          }
+          isFirstLine = false;
+        }
+
+        let runX = startX;
+        currentLine.forEach(seg => {
+          doc.setFont("helvetica", seg.isBold ? "bold" : "normal");
+          doc.setFontSize(9);
+          setTxt(BODY);
+          doc.text(seg.text, runX, y);
+          runX += doc.getTextWidth(seg.text);
+        });
+        y += lineHeight;
+        currentLine = [];
+        currentW = 0;
+      };
+
+      segments.forEach(seg => {
+        doc.setFont("helvetica", seg.isBold ? "bold" : "normal");
+        doc.setFontSize(9);
+        const segW = doc.getTextWidth(seg.text);
+        const isSpace = /^\s+$/.test(seg.text);
+
+        if (isSpace) {
+          if (currentLine.length > 0) {
+            if (currentW + segW <= width) {
+              currentLine.push(seg);
+              currentW += segW;
+            } else {
+              flushCurrentLine();
+            }
+          }
+        } else {
+          if (currentW + segW <= width) {
+            currentLine.push(seg);
+            currentW += segW;
+          } else {
+            if (currentLine.length === 0) {
+              currentLine.push(seg);
+              currentW += segW;
+              flushCurrentLine();
+            } else {
+              flushCurrentLine();
+              currentLine.push(seg);
+              currentW = segW;
+            }
+          }
+        }
+      });
+
+      flushCurrentLine();
+    };
+
+    // ── COVER HEADER ─────────────────────────────────────────
+    setFill(DARK); doc.rect(0, 0, pageW, 36, "F");
+    setFill(BLUE); doc.rect(0, 36, pageW, 3, "F");
+    // Logo dot
+    setFill(BLUE);  doc.circle(margin, 13, 3.5, "F");
+    setFill(WHITE); doc.circle(margin, 13, 1.6, "F");
+    // Title
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(15);
+    setTxt(WHITE);
+    doc.text("TechCare Swarm", margin + 7, 12);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    setTxt([180, 200, 240]);
+    doc.text("AI-Powered Industrial Incident Report", margin + 7, 18.5);
+    // Right-side timestamp
+    doc.setFontSize(7.5);
+    setTxt([148, 163, 184]);
+    const ts = timestamp || new Date().toLocaleString();
+    doc.text(ts, pageW - margin, 12, { align: "right" });
+    doc.text("Confidential - Internal Use Only", pageW - margin, 18.5, { align: "right" });
+
+    y = 46;
+
+    // ── EQUIPMENT SUMMARY STRIP ───────────────────────────────
+    setFill(LIGHT);
+    doc.roundedRect(margin, y, contentW, 14, 2, 2, "F");
+    setFill(BLUE);
+    doc.roundedRect(margin, y, 4, 14, 1, 1, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    setTxt(DARK);
+    doc.text(`Incident Report: ${equipment} Mitigation`, margin + 8, y + 6.5);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    setTxt(MUTED);
+    doc.text("Generated by TechCare Swarm Autonomous Agent Cluster", margin + 8, y + 11.5);
+    y += 22;
+
+    // ── REPORT BODY ───────────────────────────────────────────
+    const lines = reportText.replace(/\\n/g, "\n").split("\n");
+    let inSection = false;
+    let hasComplianceSignOff = false;
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) { y += inSection ? 2 : 3; continue; }
+
+      // Horizontal rule
+      if (/^---+$/.test(line)) {
+        checkY(5);
+        setDraw(DIVIDER);
+        doc.setLineWidth(0.3);
+        doc.line(margin, y, pageW - margin, y);
+        y += 5; continue;
+      }
+
+      // Section heading detection
+      const secM  = line.match(/^\*\*([^*]+?)\*\*:?\s*(.*)$/) || line.match(/^([A-Z][A-Z ,&'\-/]{2,}):\s*(.*)$/);
+      const isH3  = /^#{1,3}\s/.test(line);
+      const isSec = secM && /^[A-Z0-9 &'\-/:]+$/.test((secM[1] || "").trim());
+
+      if (isSec || isH3) {
+        checkY(14);
+        const rawLabel = isSec ? secM![1].trim().replace(/:/g, "") : line.replace(/^#+\s*/, "").replace(/:$/, "").trim();
+        const rest     = isSec ? (secM![2] || "").trim() : "";
+        const label = formatHeading(rawLabel);
+        
+        if (label === "Compliance Sign-off") {
+          hasComplianceSignOff = true;
+        }
+
+        // Section card background + left bar
+        setFill(LIGHT);
+        doc.roundedRect(margin, y - 1, contentW, 9, 1.5, 1.5, "F");
+        setFill(BLUE);
+        doc.roundedRect(margin, y - 1, 3, 9, 1, 1, "F");
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(8.5);
+        setTxt(BLUE);
+        doc.text(label, margin + 6, y + 5.2);
+        inSection = true;
+        y += 11;
+
+        if (rest) {
+          writeWrappedInlineText(rest, margin + 4, contentW - 4, 4.8);
+          y += 1;
+        }
+        continue;
+      }
+
+      // Bullet items — draw circle manually to avoid Unicode encoding bugs
+      const bulletMatch = line.match(/^[-*•○◦■]\s+(.+)/);
+      const numMatch    = line.match(/^(\d+)\.\s+(.+)/);
+      if (bulletMatch || numMatch) {
+        const content = bulletMatch ? bulletMatch[1] : numMatch![2];
+        if (numMatch) {
+          writeWrappedInlineText(content, margin + 8, contentW - 10, 4.8, { type: "number", numStr: `${numMatch[1]}.` });
+        } else {
+          writeWrappedInlineText(content, margin + 8, contentW - 10, 4.8, { type: "bullet" });
+        }
+        y += 1.5;
+        continue;
+      }
+
+      // Plain paragraph
+      writeWrappedInlineText(line, margin + 4, contentW - 4, 5);
+      y += 1;
+    }
+
+    if (hasComplianceSignOff) {
+      checkY(35);
+      y += 10;
+      
+      setDraw(MUTED);
+      doc.setLineWidth(0.3);
+      doc.setLineDashPattern([1, 2], 0);
+      
+      const col1X = margin + 5;
+      const colWidth = (contentW - 20) / 2;
+      doc.line(col1X, y + 15, col1X + colWidth, y + 15);
+      
+      const col2X = pageW - margin - 5 - colWidth;
+      doc.line(col2X, y + 15, col2X + colWidth, y + 15);
+      
+      doc.setLineDashPattern([], 0);
+      
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8.5);
+      setTxt(DARK);
+      doc.text("Operations Coordinator Signature", col1X, y + 19.5);
+      doc.text("Safety Officer Signature", col2X, y + 19.5);
+      
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7.5);
+      setTxt(MUTED);
+      doc.text("Date: ________________________", col1X, y + 24);
+      doc.text("Date: ________________________", col2X, y + 24);
+      
+      y += 30;
+    }
+
+    // ── FOOTER BAR on every page ──────────────────────────────
+    const totalPages = (doc as any).getNumberOfPages();
+    for (let p = 1; p <= totalPages; p++) {
+      doc.setPage(p);
+      setFill(DARK);
+      doc.rect(0, pageH - 12, pageW, 12, "F");
+      setFill(BLUE);
+      doc.rect(0, pageH - 12, pageW, 1, "F");
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(7);
+      setTxt([148, 163, 184]);
+      doc.text("TechCare Swarm  |  Powered by Groq Llama & Band SDK", margin, pageH - 6);
+      doc.text(`Page ${p} of ${totalPages}`, pageW - margin, pageH - 6, { align: "right" });
+    }
+
+    const filename = `TechCare_${equipment.replace(/\s+/g, "_")}_Incident_Report.pdf`;
+    doc.save(filename);
+  };
+
   const downloadReport = () => {
-    const element = document.createElement("a");
-    const file = new Blob([finalReport], { type: "text/markdown" });
-    element.href = URL.createObjectURL(file);
-    element.download = "TechCare_Swarm_Incident_Report.md";
-    document.body.appendChild(element);
-    element.click();
-    document.body.removeChild(element);
+    const equipment = activeEquipment || selectedBlueprint || "Equipment";
+    generatePDF(finalReport, equipment);
   };
 
   const resetSandbox = async () => {
@@ -781,123 +1177,17 @@ export default function Home() {
             </button>
           </nav>
 
-          <hr className="border-slate-200" />
-
-          {/* Active Agents Roster */}
-          <div className="space-y-3 flex-1 overflow-y-auto pr-1">
-            <h3 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-              Live Swarm Status
-            </h3>
-            
-            {/* Coordinator Info */}
-            <div className="flex items-center justify-between p-2.5 bg-white/[0.01] rounded-lg border border-white/[0.04]">
-              <div className="flex items-center gap-2.5">
-                <div className="p-1.5 bg-blue-500/10 text-blue-400 rounded">
-                  <Terminal className="h-4.5 w-4.5" />
-                </div>
-                <div className="text-left">
-                  <div className="text-xs font-semibold text-gray-200">Coordinator</div>
-                  <div className="text-[9px] text-gray-500">Operations Desk</div>
-                </div>
-              </div>
-              <span className="flex h-2 w-2 relative">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
-              </span>
-            </div>
-
-            {/* Analyst Info */}
-            <div className="flex items-center justify-between p-2.5 bg-white/[0.01] rounded-lg border border-white/[0.04]">
-              <div className="flex items-center gap-2.5">
-                <div className="p-1.5 bg-yellow-500/10 text-yellow-400 rounded">
-                  <Cpu className="h-4.5 w-4.5" />
-                </div>
-                <div className="text-left">
-                  <div className="text-xs font-semibold text-gray-200">Systems Analyst</div>
-                  <div className="text-[9px] text-gray-500">Technical Diagnostics</div>
-                </div>
-              </div>
-              <span className="flex h-2 w-2 relative">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
-              </span>
-            </div>
-
-            {/* Auditor Info */}
-            <div className="flex items-center justify-between p-2.5 bg-white/[0.01] rounded-lg border border-white/[0.04]">
-              <div className="flex items-center gap-2.5">
-                <div className="p-1.5 bg-emerald-500/10 text-emerald-400 rounded">
-                  <UserCheck className="h-4.5 w-4.5" />
-                </div>
-                <div className="text-left">
-                  <div className="text-xs font-semibold text-gray-200">Safety Auditor</div>
-                  <div className="text-[9px] text-gray-500">Compliance & Audit</div>
-                </div>
-              </div>
-              <span className="flex h-2 w-2 relative">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
-              </span>
-            </div>
-
-            <hr className="border-white/[0.06] my-4" />
-
-            {/* Critical Systems Health */}
-            <div className="space-y-2">
-              <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest flex items-center justify-between">
-                <span>Critical Systems Health</span>
-                <span className="text-[9px] text-cyan-400 font-extrabold uppercase">Live Feed</span>
-              </h3>
-              
-              {equipmentStatus.length === 0 ? (
-                <div className="text-[10px] text-gray-500 italic">Calculating health data...</div>
-              ) : (
-                equipmentStatus.map((eq) => {
-                  let statusBg = "bg-emerald-500/10 border-emerald-500/20 text-emerald-400";
-                  let healthColor = "bg-emerald-500";
-                  
-                  if (eq.status === "CRITICAL") {
-                    statusBg = "bg-red-500/10 border-red-500/20 text-red-400";
-                    healthColor = "bg-red-500 animate-pulse";
-                  } else if (eq.status === "WARNING") {
-                    statusBg = "bg-yellow-500/10 border-yellow-500/20 text-yellow-400";
-                    healthColor = "bg-yellow-500";
-                  }
-                  
-                  return (
-                    <div key={eq.name} className="p-2 bg-white/[0.01] rounded-lg border border-white/[0.04] space-y-1 text-left">
-                      <div className="flex justify-between items-center">
-                        <span className="text-xs font-semibold text-gray-300">{eq.name}</span>
-                        <span className={`text-[8px] font-bold px-1 py-0.2 rounded border ${statusBg}`}>
-                          {eq.status}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 bg-white/[0.05] h-1 rounded-full overflow-hidden">
-                          <div className={`h-full ${healthColor}`} style={{ width: `${eq.health_score}%` }}></div>
-                        </div>
-                        <span className="text-[9px] font-bold text-gray-400 w-6 text-right">{eq.health_score}%</span>
-                      </div>
-                      <div className="text-[8px] text-gray-500 flex justify-between">
-                        <span>Alarms: {eq.incidents_count}</span>
-                        <span>Last: {eq.last_incident !== "N/A" ? new Date(eq.last_incident).toLocaleTimeString() : "Never"}</span>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
+          <hr className="border-slate-200 mt-2" />
         </div>
 
         {/* Footer Info */}
-        <div className="text-[10px] text-gray-500 space-y-1 mt-6 border-t border-white/[0.05] pt-4">
-          <div className="font-semibold text-gray-400">TechCare Swarm Engine</div>
+        <div className="text-[10px] text-slate-500 space-y-1 mt-6 border-t border-slate-200 pt-4">
+          <div className="font-semibold text-slate-700">TechCare Swarm Engine</div>
           <div>Inference: Llama-3.3-70B on Groq</div>
           <div>Protocols: Band SDK WebSockets</div>
           <button
             onClick={resetSandbox}
-            className="w-full mt-3.5 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 text-red-400 font-semibold text-[9px] uppercase tracking-wider transition"
+            className="w-full mt-3.5 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-red-200 bg-red-50 hover:bg-red-100 text-red-600 font-bold text-[9px] uppercase tracking-wider transition shadow-sm"
           >
             <Wrench className="h-3 w-3" />
             <span>Reset Sandbox Database</span>
@@ -1029,6 +1319,7 @@ export default function Home() {
                         className="text-xs bg-white border border-slate-200 rounded-md py-1 px-2.5 focus:outline-none focus:ring-1 focus:ring-[#0b57d0] disabled:opacity-50 text-slate-700 font-medium"
                       >
                         <option>Offline Simulation Sandbox</option>
+                        <option>Offline Mock (Instant)</option>
                         <option>Live Band.ai Network</option>
                       </select>
                     </div>
@@ -1102,7 +1393,7 @@ export default function Home() {
                       <button
                         onClick={downloadReport}
                         className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-slate-100 rounded transition"
-                        title="Download Report markdown"
+                        title="Download Report as PDF"
                       >
                         <Download className="h-4 w-4" />
                       </button>
@@ -1144,10 +1435,17 @@ export default function Home() {
                     </div>
                     <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl p-5 overflow-y-auto space-y-3.5 font-mono">
                       {swarmLogs.length === 0 ? (
-                        <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-2">
-                          <Terminal className="h-8 w-8 opacity-20" />
-                          <p className="text-xs">Swarm is idle. Telemetry log stream will load here.</p>
-                        </div>
+                        isRunning ? (
+                          <div className="h-full flex flex-col items-center justify-center text-[#0b57d0] space-y-2">
+                            <Loader2 className="h-8 w-8 animate-spin opacity-80" />
+                            <p className="text-xs font-semibold animate-pulse">Swarm is active. Awaiting real-time telemetry log feed...</p>
+                          </div>
+                        ) : (
+                          <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-2">
+                            <Terminal className="h-8 w-8 opacity-20" />
+                            <p className="text-xs">Swarm is idle. Telemetry log stream will load here.</p>
+                          </div>
+                        )
                       ) : (
                         swarmLogs.map((log, index) => {
                           let borderClass = "border-l-2 border-l-blue-500";
@@ -1227,95 +1525,123 @@ export default function Home() {
                         </button>
                       </div>
                     </div>
-                    <div className="max-w-3xl mx-auto w-full flex-1">
-                      {!finalReport ? (
-                        <div className="h-[400px] flex flex-col items-center justify-center text-slate-400 space-y-2">
+                    <div className="max-w-7xl mx-auto w-full flex-1">
+                      {!safetyReport ? (
+                        <div className="h-[400px] flex flex-col items-center justify-center text-slate-400 space-y-2 bg-white border border-slate-200 rounded-2xl shadow-sm">
                           <FileText className="h-8 w-8 opacity-20" />
                           <p className="text-xs">Waiting for swarm Safety Auditor compliance approval...</p>
                         </div>
                       ) : (
-                        <div className="text-slate-700 flex flex-col h-full">
-                          {/* Sub-tab Bar */}
-                          {finalReport.includes("---") && (
-                            <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3 mb-6 shrink-0">
-                              <button
-                                onClick={() => setActiveReportSubTab("safety")}
-                                className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-all border ${
-                                  activeReportSubTab === "safety"
-                                    ? "bg-blue-50 text-[#0b57d0] border-blue-200 shadow-sm"
-                                    : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:text-slate-900"
-                                }`}
-                              >
-                                <Shield className="h-3.5 w-3.5" />
-                                <span>Safety Report</span>
-                              </button>
-                              {parsedReport.execution && (
-                                <button
-                                  onClick={() => setActiveReportSubTab("execution")}
-                                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-all border ${
-                                    activeReportSubTab === "execution"
-                                      ? "bg-purple-50 text-purple-700 border-purple-200 shadow-sm"
-                                      : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:text-slate-900"
-                                  }`}
-                                >
-                                  <Activity className="h-3.5 w-3.5" />
-                                  <span>Execution logs</span>
-                                </button>
-                              )}
-                              {parsedReport.detective && (
-                                <button
-                                  onClick={() => setActiveReportSubTab("detective")}
-                                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-all border ${
-                                    activeReportSubTab === "detective"
-                                      ? "bg-rose-50 text-rose-700 border-rose-200 shadow-sm"
-                                      : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:text-slate-900"
-                                  }`}
-                                >
-                                  <Search className="h-3.5 w-3.5" />
-                                  <span>Detective Report</span>
-                                </button>
-                              )}
-                              {parsedReport.knowledge && (
-                                <button
-                                  onClick={() => setActiveReportSubTab("knowledge")}
-                                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-all border ${
-                                    activeReportSubTab === "knowledge"
-                                      ? "bg-amber-50 text-amber-700 border-amber-200 shadow-sm"
-                                      : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:text-slate-900"
-                                  }`}
-                                >
-                                  <Brain className="h-3.5 w-3.5" />
-                                  <span>Knowledge Update</span>
-                                </button>
-                              )}
+                        <div className="text-slate-700 h-full">
+                          {(!finalReport.includes("---") && !isRunning) ? (
+                            <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm max-w-3xl mx-auto">
+                              <div className="flex items-center gap-2 pb-3 border-b border-slate-100 mb-4">
+                                <Shield className="h-4.5 w-4.5 text-[#0b57d0]" />
+                                <h3 className="font-bold text-sm text-slate-800">Safety Incident Report</h3>
+                              </div>
+                              {renderReportDocument(finalReport, activeEquipment || undefined)}
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                              {/* Left Column: Safety Incident Report (Span 7) */}
+                              <div className="lg:col-span-7 bg-white border border-slate-200 p-6 rounded-2xl shadow-sm flex flex-col h-full min-h-[500px]">
+                                <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+                                  <div className="flex items-center gap-2">
+                                    <Shield className="h-4.5 w-4.5 text-[#0b57d0]" />
+                                    <h3 className="font-bold text-sm text-slate-800">Safety Incident Report</h3>
+                                  </div>
+                                  <span className="text-[10px] bg-blue-50 text-[#0b57d0] px-2 py-0.5 rounded-full font-bold">Approved Plan</span>
+                                </div>
+                                <div className="flex-1 overflow-y-auto">
+                                  {renderReportDocument(parsedReport.safety || finalReport, activeEquipment || undefined)}
+                                </div>
+                              </div>
+
+                              {/* Right Column: Automated Swarm Containment & RCA Results (Span 5) */}
+                              <div className="lg:col-span-5 flex flex-col gap-4">
+                                {/* Execution Logs Block */}
+                                <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm flex flex-col min-h-[160px]">
+                                  <div className="flex items-center justify-between pb-2 border-b border-slate-100 mb-3">
+                                    <div className="flex items-center gap-2">
+                                      <Activity className="h-4.5 w-4.5 text-purple-600" />
+                                      <h3 className="font-bold text-xs text-slate-800">Swarm Actuator Execution Logs</h3>
+                                    </div>
+                                    {parsedReport.execution ? (
+                                      <span className="text-[10px] bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full font-bold">SUCCESS</span>
+                                    ) : isRunning ? (
+                                      <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-bold animate-pulse">RUNNING</span>
+                                    ) : (
+                                      <span className="text-[10px] bg-slate-100 text-slate-400 px-2 py-0.5 rounded-full font-bold">WAITING</span>
+                                    )}
+                                  </div>
+                                  <div className="flex-1 overflow-y-auto max-h-[220px]">
+                                    {parsedReport.execution ? (
+                                      renderExecutionLogs(parsedReport.execution)
+                                    ) : (
+                                      <div className="flex flex-col items-center justify-center h-full text-slate-400 py-6">
+                                        <Activity className="h-6 w-6 animate-pulse opacity-45 mb-2" />
+                                        <p className="text-[10px]">Simulating actuator containment steps...</p>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Detective Report Block */}
+                                <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm flex flex-col min-h-[160px]">
+                                  <div className="flex items-center justify-between pb-2 border-b border-slate-100 mb-3">
+                                    <div className="flex items-center gap-2">
+                                      <Search className="h-4.5 w-4.5 text-rose-600" />
+                                      <h3 className="font-bold text-xs text-slate-800">Forensic Investigation & RCA</h3>
+                                    </div>
+                                    {parsedReport.detective ? (
+                                      <span className="text-[10px] bg-rose-50 text-rose-700 px-2 py-0.5 rounded-full font-bold">COMPLETE</span>
+                                    ) : isRunning ? (
+                                      <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-bold animate-pulse">WAITING</span>
+                                    ) : (
+                                      <span className="text-[10px] bg-slate-100 text-slate-400 px-2 py-0.5 rounded-full font-bold">WAITING</span>
+                                    )}
+                                  </div>
+                                  <div className="flex-1 overflow-y-auto max-h-[220px]">
+                                    {parsedReport.detective ? (
+                                      renderRichPanel(parsedReport.detective)
+                                    ) : (
+                                      <div className="flex flex-col items-center justify-center h-full text-slate-400 py-6">
+                                        <Search className="h-6 w-6 opacity-30 mb-2" />
+                                        <p className="text-[10px]">Awaiting containment completion to start timeline analysis...</p>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Knowledge Curator Block */}
+                                <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm flex flex-col min-h-[160px]">
+                                  <div className="flex items-center justify-between pb-2 border-b border-slate-100 mb-3">
+                                    <div className="flex items-center gap-2">
+                                      <Brain className="h-4.5 w-4.5 text-amber-600" />
+                                      <h3 className="font-bold text-xs text-slate-800">Self-Learning Knowledge Curator</h3>
+                                    </div>
+                                    {parsedReport.knowledge ? (
+                                      <span className="text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full font-bold">DB UPDATED</span>
+                                    ) : isRunning ? (
+                                      <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-bold animate-pulse">WAITING</span>
+                                    ) : (
+                                      <span className="text-[10px] bg-slate-100 text-slate-400 px-2 py-0.5 rounded-full font-bold">WAITING</span>
+                                    )}
+                                  </div>
+                                  <div className="flex-1 overflow-y-auto max-h-[220px]">
+                                    {parsedReport.knowledge ? (
+                                      renderRichPanel(parsedReport.knowledge)
+                                    ) : (
+                                      <div className="flex flex-col items-center justify-center h-full text-slate-400 py-6">
+                                        <Brain className="h-6 w-6 opacity-30 mb-2" />
+                                        <p className="text-[10px]">Awaiting forensic RCA to optimize database specifications...</p>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
                             </div>
                           )}
-
-                          {/* Sub-tab Content */}
-                          <div className="flex-1 animate-fade-in">
-                            {activeReportSubTab === "execution" && parsedReport.execution ? (
-                              <div className="space-y-3">
-                                <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                                  Containment Swarm Actuator Status Logs
-                                </div>
-                                <div className="bg-slate-900 text-emerald-400 font-mono text-xs p-6 rounded-xl border border-slate-850 leading-relaxed overflow-x-auto whitespace-pre shadow-inner">
-                                  {parsedReport.execution}
-                                </div>
-                              </div>
-                            ) : activeReportSubTab === "detective" && parsedReport.detective ? (
-                              <div>
-                                {renderReportDocument(parsedReport.detective, activeEquipment || undefined)}
-                              </div>
-                            ) : activeReportSubTab === "knowledge" && parsedReport.knowledge ? (
-                              <div>
-                                {renderReportDocument(parsedReport.knowledge, activeEquipment || undefined)}
-                              </div>
-                            ) : (
-                              <div>
-                                {renderReportDocument(parsedReport.safety || finalReport, activeEquipment || undefined)}
-                              </div>
-                            )}
-                          </div>
                         </div>
                       )}
                     </div>
@@ -1666,7 +1992,7 @@ export default function Home() {
               {/* History details Modal / Overlay */}
               {selectedHistoryItem && (
                 <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-                  <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-4xl max-h-[85vh] overflow-hidden flex flex-col shadow-xl animate-fade-in">
+                  <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-6xl max-h-[85vh] overflow-hidden flex flex-col shadow-xl animate-fade-in">
                     {/* Modal header */}
                     <div className="flex justify-between items-center p-5 border-b border-slate-200 bg-slate-50">
                       <div className="flex items-center gap-3">
@@ -1677,11 +2003,15 @@ export default function Home() {
                       </div>
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => window.open(`/api/history/${selectedHistoryItem.id}/export`)}
+                          onClick={() => {
+                            const equipment = selectedHistoryItem.equipment || "Equipment";
+                            const ts = new Date(selectedHistoryItem.timestamp).toLocaleString();
+                            generatePDF(selectedHistoryItem.report || "", equipment, ts);
+                          }}
                           className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-700 hover:bg-emerald-50 py-1 px-3 rounded-full border border-emerald-200 transition"
                         >
                           <Download className="h-3.5 w-3.5" />
-                          <span>Export Markdown</span>
+                          <span>Export PDF</span>
                         </button>
                         <button
                           onClick={() => setSelectedHistoryItem(null)}
@@ -1738,136 +2068,74 @@ export default function Home() {
 
                       {/* Audit report details */}
                       <div className="space-y-2">
-                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Compiled Swarm Safety Report:</div>
-                        <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl text-xs font-sans leading-relaxed text-slate-700 whitespace-pre-wrap max-h-96 overflow-y-auto flex flex-col gap-4">
-                          {!selectedHistoryItem.report ? (
-                            <div className="flex flex-col items-center justify-center text-slate-400 py-10">
-                              <FileText className="h-8 w-8 opacity-25 mb-2" />
-                              <p className="text-xs">No report generated.</p>
+                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Swarm Reports & Containment Results:</div>
+                        {!selectedHistoryItem.report ? (
+                          <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl text-xs text-slate-400 text-center py-8">
+                            No report available.
+                          </div>
+                        ) : !selectedHistoryItem.report.includes("---") ? (
+                          <div className="bg-slate-50 border border-slate-200 p-6 rounded-xl text-xs font-sans leading-relaxed text-slate-700 whitespace-pre-wrap max-h-96 overflow-y-auto">
+                            {renderReportDocument(selectedHistoryItem.report, selectedHistoryItem.equipment)}
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                            {/* Left Column: Safety Incident Report (Span 7) */}
+                            <div className="lg:col-span-7 bg-slate-50 border border-slate-200 p-6 rounded-xl flex flex-col min-h-[300px] max-h-[500px] overflow-y-auto shadow-sm">
+                              <div className="flex items-center justify-between pb-2 border-b border-slate-200 mb-4">
+                                <div className="flex items-center gap-2">
+                                  <Shield className="h-4.5 w-4.5 text-[#0b57d0]" />
+                                  <h4 className="font-bold text-xs text-slate-800">Safety Incident Report</h4>
+                                </div>
+                                <span className="text-[10px] bg-blue-50 text-[#0b57d0] px-2 py-0.5 rounded-full font-bold">Approved</span>
+                              </div>
+                              <div className="flex-1">
+                                {renderReportDocument(parsedHistoryReport?.safety || selectedHistoryItem.report, selectedHistoryItem.equipment)}
+                              </div>
                             </div>
-                          ) : (
-                            <div className="flex flex-col h-full w-full">
-                              {/* History Sub-tab Bar */}
-                              {selectedHistoryItem.report.includes("---") && parsedHistoryReport && (
-                                <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3 mb-4 shrink-0 bg-white p-2 rounded-lg">
-                                  <button
-                                    onClick={() => setActiveHistoryReportSubTab("safety")}
-                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all border ${
-                                      activeHistoryReportSubTab === "safety"
-                                        ? "bg-blue-50 text-[#0b57d0] border-blue-200 shadow-sm"
-                                        : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:text-slate-900"
-                                    }`}
-                                  >
-                                    <Shield className="h-3.5 w-3.5" />
-                                    <span>Safety Report</span>
-                                  </button>
-                                  {parsedHistoryReport.execution && (
-                                    <button
-                                      onClick={() => setActiveHistoryReportSubTab("execution")}
-                                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all border ${
-                                        activeHistoryReportSubTab === "execution"
-                                          ? "bg-purple-50 text-purple-700 border-purple-200 shadow-sm"
-                                          : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:text-slate-900"
-                                      }`}
-                                    >
-                                      <Activity className="h-3.5 w-3.5" />
-                                      <span>Execution logs</span>
-                                    </button>
-                                  )}
-                                  {parsedHistoryReport.detective && (
-                                    <button
-                                      onClick={() => setActiveHistoryReportSubTab("detective")}
-                                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all border ${
-                                        activeHistoryReportSubTab === "detective"
-                                          ? "bg-rose-50 text-rose-700 border-rose-200 shadow-sm"
-                                          : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:text-slate-900"
-                                      }`}
-                                    >
-                                      <Search className="h-3.5 w-3.5" />
-                                      <span>Detective Report</span>
-                                    </button>
-                                  )}
-                                  {parsedHistoryReport.knowledge && (
-                                    <button
-                                      onClick={() => setActiveHistoryReportSubTab("knowledge")}
-                                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all border ${
-                                        activeHistoryReportSubTab === "knowledge"
-                                          ? "bg-amber-50 text-amber-700 border-amber-200 shadow-sm"
-                                          : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:text-slate-900"
-                                      }`}
-                                    >
-                                      <Brain className="h-3.5 w-3.5" />
-                                      <span>Knowledge Update</span>
-                                    </button>
-                                  )}
+
+                            {/* Right Column: stacked logs and reports (Span 5) */}
+                            <div className="lg:col-span-5 flex flex-col gap-4">
+                              {/* Execution Logs */}
+                              {parsedHistoryReport?.execution && (
+                                <div className="bg-slate-50 border border-slate-200 p-6 rounded-xl flex flex-col shadow-sm">
+                                  <div className="flex items-center gap-2 pb-2 border-b border-slate-200 mb-3">
+                                    <Activity className="h-4.5 w-4.5 text-purple-600" />
+                                    <h4 className="font-bold text-xs text-slate-800 font-sans">Execution Logs</h4>
+                                  </div>
+                                  <div className="max-h-40 overflow-y-auto bg-slate-900 p-3 rounded-xl border border-slate-850 shadow-inner">
+                                    {renderExecutionLogs(parsedHistoryReport.execution)}
+                                  </div>
                                 </div>
                               )}
 
-                              {/* History Sub-tab Content */}
-                              <div className="flex-1 mt-2">
-                                {activeHistoryReportSubTab === "execution" && parsedHistoryReport?.execution ? (
-                                  <div className="bg-slate-900 text-emerald-400 font-mono text-[11px] p-5 rounded-xl border border-slate-850 leading-relaxed overflow-x-auto whitespace-pre shadow-inner">
-                                    {parsedHistoryReport.execution}
+                              {/* Detective Report */}
+                              {parsedHistoryReport?.detective && (
+                                <div className="bg-slate-50 border border-slate-200 p-6 rounded-xl flex flex-col max-h-[250px] overflow-y-auto shadow-sm">
+                                  <div className="flex items-center gap-2 pb-2 border-b border-slate-200 mb-3">
+                                    <Search className="h-4.5 w-4.5 text-rose-600" />
+                                    <h4 className="font-bold text-xs text-slate-800 font-sans">Root Cause Analysis (RCA)</h4>
                                   </div>
-                                ) : activeHistoryReportSubTab === "detective" && parsedHistoryReport?.detective ? (
-                                  <div className="space-y-4">
-                                    {parsedHistoryReport.detective.split("\n\n").map((section: string, idx: number) => {
-                                      if (section.startsWith("###") || section.startsWith("##") || section.startsWith("#")) {
-                                        const headingText = section.replace(/^#+\s+/, "").trim();
-                                        return (
-                                          <h4 key={idx} className="font-black text-[#0b57d0] border-b border-slate-200 pb-2 mt-5 text-xs uppercase tracking-wider">
-                                            {headingText}
-                                          </h4>
-                                        );
-                                      }
-                                      return (
-                                        <p key={idx} className="text-xs whitespace-pre-wrap text-slate-700 leading-relaxed">
-                                          {renderMarkdownText(section)}
-                                        </p>
-                                      );
-                                    })}
+                                  <div>
+                                    {renderRichPanel(parsedHistoryReport.detective)}
                                   </div>
-                                ) : activeHistoryReportSubTab === "knowledge" && parsedHistoryReport?.knowledge ? (
-                                  <div className="space-y-4">
-                                    {parsedHistoryReport.knowledge.split("\n\n").map((section: string, idx: number) => {
-                                      if (section.startsWith("###") || section.startsWith("##") || section.startsWith("#")) {
-                                        const headingText = section.replace(/^#+\s+/, "").trim();
-                                        return (
-                                          <h4 key={idx} className="font-black text-[#0b57d0] border-b border-slate-200 pb-2 mt-5 text-xs uppercase tracking-wider">
-                                            {headingText}
-                                          </h4>
-                                        );
-                                      }
-                                      return (
-                                        <p key={idx} className="text-xs whitespace-pre-wrap text-slate-700 leading-relaxed">
-                                          {renderMarkdownText(section)}
-                                        </p>
-                                      );
-                                    })}
+                                </div>
+                              )}
+
+                              {/* Knowledge Update */}
+                              {parsedHistoryReport?.knowledge && (
+                                <div className="bg-slate-50 border border-slate-200 p-6 rounded-xl flex flex-col max-h-[250px] overflow-y-auto shadow-sm">
+                                  <div className="flex items-center gap-2 pb-2 border-b border-slate-200 mb-3">
+                                    <Brain className="h-4.5 w-4.5 text-amber-600" />
+                                    <h4 className="font-bold text-xs text-slate-800 font-sans">Knowledge Curator updates</h4>
                                   </div>
-                                ) : (
-                                  <div className="space-y-4">
-                                    {(parsedHistoryReport?.safety || selectedHistoryItem.report).split("\n\n").map((section: string, idx: number) => {
-                                      if (section.startsWith("###") || section.startsWith("##") || section.startsWith("#")) {
-                                        const headingText = section.replace(/^#+\s+/, "").trim();
-                                        return (
-                                          <h4 key={idx} className="font-black text-[#0b57d0] border-b border-slate-200 pb-2 mt-5 text-xs uppercase tracking-wider">
-                                            {headingText}
-                                          </h4>
-                                        );
-                                      }
-                                      return (
-                                        <p key={idx} className="text-xs whitespace-pre-wrap text-slate-700 leading-relaxed">
-                                          {renderMarkdownText(section)}
-                                        </p>
-                                      );
-                                    })}
+                                  <div>
+                                    {renderRichPanel(parsedHistoryReport.knowledge)}
                                   </div>
-                                )}
-                              </div>
+                                </div>
+                              )}
                             </div>
-                          )}
-                        </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>

@@ -4,6 +4,21 @@ import os
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "database.json")
 
+def format_spec_to_str(spec) -> str:
+    if isinstance(spec, str):
+        return spec
+    if isinstance(spec, dict):
+        lines = []
+        for k, v in spec.items():
+            if isinstance(v, list):
+                lines.append(f"{k}:")
+                for item in v:
+                    lines.append(f"  - {item}")
+            else:
+                lines.append(f"{k}: {v}")
+        return "\n".join(lines)
+    return str(spec)
+
 class DynamicKnowledgeBase(dict):
     """
     A dictionary subclass that dynamically reads from database.json
@@ -13,7 +28,18 @@ class DynamicKnowledgeBase(dict):
         if os.path.exists(DB_PATH):
             try:
                 with open(DB_PATH, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                cleaned = {}
+                dirty = False
+                for k, v in data.items():
+                    if not isinstance(v, str):
+                        cleaned[k] = format_spec_to_str(v)
+                        dirty = True
+                    else:
+                        cleaned[k] = v
+                if dirty:
+                    self._save(cleaned)
+                return cleaned
             except Exception as e:
                 print(f"Error loading database.json: {e}")
         return {}
@@ -46,9 +72,9 @@ class DynamicKnowledgeBase(dict):
     def __len__(self):
         return len(self._load())
 
-    def update_spec(self, name: str, spec: str) -> None:
+    def update_spec(self, name: str, spec) -> None:
         data = self._load()
-        data[name] = spec
+        data[name] = format_spec_to_str(spec)
         self._save(data)
 
     def delete_spec(self, name: str) -> None:
