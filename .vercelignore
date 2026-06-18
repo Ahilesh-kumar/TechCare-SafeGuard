@@ -1,0 +1,11 @@
+# Exclude backend files and directories from Vercel frontend build
+api/
+venv/
+manuals/
+run_agents.py
+diagnose_band.py
+techcare-swarm.service
+requirements.txt
+TechCare_Swarm_Pitch_Deck.pptx
+*.pptx
+*.log
