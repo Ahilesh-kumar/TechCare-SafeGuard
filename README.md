@@ -1,4 +1,4 @@
-# 🤖 Multi-AI-Agent Swarm Orchestration System
+# 🛡️ TechCare SafeGuard: Autonomous Incident Response System
 
 An automated, multi-agent industrial emergency incident containment system built with **Band.ai** and **Groq API**. 
 
@@ -57,7 +57,7 @@ Run the Backend Server:
 python -m uvicorn api.index:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Run the Swarm Agents (in a separate terminal):
+Run the SafeGuard Agents (in a separate terminal):
 ```bash
 source venv/bin/activate
 python run_agents.py

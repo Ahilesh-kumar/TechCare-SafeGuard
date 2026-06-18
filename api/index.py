@@ -21,7 +21,7 @@ app = FastAPI()
 
 @app.get("/")
 def read_root():
-    return {"status": "ok", "message": "TechCare Swarm API is running. Go to /docs for Swagger documentation."}
+    return {"status": "ok", "message": "TechCare SafeGuard API is running. Go to /docs for Swagger documentation."}
 
 @app.on_event("startup")
 async def startup_event():
@@ -136,7 +136,7 @@ def parse_prompts():
 
             coordinator = get_section(content, "## 1. Coordinator Agent", "## 2. Systems Analyst Agent")
             # Clean up top header in coordinator part if present
-            coordinator = coordinator.replace("# Swarm Agent Definitions & Rules", "").strip()
+            coordinator = coordinator.replace("# SafeGuard Agent Definitions & Rules", "").strip()
             analyst = get_section(content, "## 2. Systems Analyst Agent", "## 3. Safety Auditor Agent")
             auditor = get_section(content, "## 3. Safety Auditor Agent", "## 4. Execution Agent")
             execution = get_section(content, "## 4. Execution Agent", "## 5. Forensic Investigator Agent")
@@ -158,7 +158,7 @@ def parse_prompts():
 def save_prompts(coordinator, analyst, auditor, execution, forensic, curator):
     try:
         content = (
-            "# Swarm Agent Definitions & Rules\n\n"
+            "# SafeGuard Agent Definitions & Rules\n\n"
             "## 1. Coordinator Agent\n"
             f"{coordinator}\n\n"
             "## 2. Systems Analyst Agent\n"
@@ -180,9 +180,9 @@ def save_prompts(coordinator, analyst, auditor, execution, forensic, curator):
         return False
 
 @app.post("/api/trigger")
-async def trigger_swarm(payload: TriggerPayload):
+async def trigger_safeguard(payload: TriggerPayload):
     """
-    Streaming endpoint that runs the agent orchestration swarm, logs history,
+    Streaming endpoint that runs the agent orchestration SafeGuard, logs history,
     and yields progress updates in real-time using Server-Sent Events (SSE).
     """
     queue = asyncio.Queue()
@@ -449,7 +449,7 @@ async def export_report(run_id: str):
     
     # Format a beautiful downloadable safety report document
     export_text = (
-        f"# TechCare Swarm - Safety Incident Report\n"
+        f"# TechCare SafeGuard - Safety Incident Report\n"
         f"**Run ID:** {record.get('id')}\n"
         f"**Timestamp:** {record.get('timestamp')}\n"
         f"**Target System:** {record.get('equipment')}\n"
@@ -494,10 +494,10 @@ async def reset_sandbox():
             
         # 3. Reset prompt_rules.md to defaults
         default_prompts = (
-            "# Swarm Agent Definitions & Rules\n\n"
+            "# SafeGuard Agent Definitions & Rules\n\n"
             "## 1. Coordinator Agent\n"
             "**Role:** Operations Desk Manager.\n"
-            "**Task:** You are the first point of contact for the TechCare Operations Swarm. When you receive a raw telemetry alert, perform the following tasks:\n"
+            "**Task:** You are the first point of contact for the TechCare Operations SafeGuard. When you receive a raw telemetry alert, perform the following tasks:\n"
             "1. Parse the alert text to extract:\n"
             "   - Target Equipment (e.g., \"Chemical Mixing Vat 4\")\n"
             "   - Violated Metric & Current Value (e.g., \"Temperature spiked to 195°C\")\n"

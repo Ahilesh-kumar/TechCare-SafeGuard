@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: techcare-swarm-api
+    name: techcare-safeguard-api
     plan: free
     runtime: python
     buildCommand: pip install -r requirements.txt

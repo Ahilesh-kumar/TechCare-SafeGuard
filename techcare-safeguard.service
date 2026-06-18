@@ -1,5 +1,5 @@
 [Unit]
-Description=TechCare Multi-Agent Swarm Service (Band.ai Remote Agents)
+Description=TechCare SafeGuard Multi-Agent Service (Band.ai Remote Agents)
 After=network.target
 
 [Service]
@@ -11,7 +11,7 @@ Restart=always
 RestartSec=5
 StandardOutput=syslog
 StandardError=syslog
-SyslogIdentifier=techcare-swarm
+SyslogIdentifier=techcare-safeguard
 
 [Install]
 WantedBy=multi-user.target

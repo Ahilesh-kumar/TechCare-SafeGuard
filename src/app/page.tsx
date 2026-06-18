@@ -34,20 +34,20 @@ import {
   Loader2,
 } from "lucide-react";
 
-interface SwarmLog {
+interface SafeGuardLog {
   agent: string;
   text: string;
 }
 
-interface SwarmReportSections {
+interface SafeGuardReportSections {
   safety: string;
   execution: string;
   detective: string;
   knowledge: string;
 }
 
-const parseSwarmReport = (reportText: string): SwarmReportSections => {
-  const sections: SwarmReportSections = {
+const parseSafeGuardReport = (reportText: string): SafeGuardReportSections => {
+  const sections: SafeGuardReportSections = {
     safety: "",
     execution: "",
     detective: "",
@@ -98,7 +98,7 @@ export default function Home() {
   const [activeReportSubTab, setActiveReportSubTab] = useState<"safety" | "execution" | "detective" | "knowledge">("safety");
   const [activeHistoryReportSubTab, setActiveHistoryReportSubTab] = useState<"safety" | "execution" | "detective" | "knowledge">("safety");
   const [alertInput, setAlertInput] = useState("");
-  const [swarmLogs, setSwarmLogs] = useState<SwarmLog[]>([]);
+  const [safeGuardLogs, setSafeGuardLogs] = useState<SafeGuardLog[]>([]);
   const [finalReport, setFinalReport] = useState("");
   const [safetyReport, setSafetyReport] = useState("");
   const [executionReport, setExecutionReport] = useState("");
@@ -148,7 +148,7 @@ export default function Home() {
   // Active Network Scanner states
   const [isScanningNetwork, setIsScanningNetwork] = useState(false);
   const [showScanModal, setShowScanModal] = useState(false);
-  const [scanLogs, setScanLogs] = useState<SwarmLog[]>([]);
+  const [scanLogs, setScanLogs] = useState<SafeGuardLog[]>([]);
   const [scanResults, setScanResults] = useState<any[]>([]);
 
   const parsedReport = useMemo(() => {
@@ -160,11 +160,11 @@ export default function Home() {
         knowledge: knowledgeReport,
       };
     }
-    return parseSwarmReport(finalReport);
+    return parseSafeGuardReport(finalReport);
   }, [isRunning, finalReport, safetyReport, executionReport, detectiveReport, knowledgeReport]);
 
   const parsedHistoryReport = useMemo(() => {
-    return selectedHistoryItem ? parseSwarmReport(selectedHistoryItem.report) : null;
+    return selectedHistoryItem ? parseSafeGuardReport(selectedHistoryItem.report) : null;
   }, [selectedHistoryItem]);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
@@ -242,7 +242,7 @@ export default function Home() {
       ? `Incident Report: ${equipmentName} Mitigation`
       : selectedBlueprint
       ? `Incident Report: ${selectedBlueprint} Mitigation`
-      : "Incident Report: Swarm Safety Mitigation";
+      : "Incident Report: SafeGuard Safety Mitigation";
 
     const lines = text.split("\n");
     const elements: React.ReactNode[] = [];
@@ -436,9 +436,9 @@ export default function Home() {
   // Scroll to bottom of logs when they update
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [swarmLogs]);
+  }, [safeGuardLogs]);
 
-  // Handle timer for swarm execution duration
+  // Handle timer for SafeGuard execution duration
   useEffect(() => {
     if (isRunning) {
       const startTime = Date.now();
@@ -552,24 +552,24 @@ export default function Home() {
     setErrorMsg("");
     const text = getPresetText(name);
     setAlertInput(text);
-    setSwarmLogs([]);
+    setSafeGuardLogs([]);
     setFinalReport("");
     setActiveEquipment("");
     
     if (autoTrigger) {
       setTimeout(() => {
-        triggerSwarm(text);
+        triggerSafeGuard(text);
       }, 100);
     }
   };
 
-  // Trigger Swarm Flow via Server-Sent Events (SSE)
-  const triggerSwarm = async (customText?: string) => {
+  // Trigger SafeGuard Flow via Server-Sent Events (SSE)
+  const triggerSafeGuard = async (customText?: string) => {
     const textToProcess = customText !== undefined ? customText : alertInput;
     if (!textToProcess.trim() || isRunning) return;
 
     setIsRunning(true);
-    setSwarmLogs([]);
+    setSafeGuardLogs([]);
     setFinalReport("");
     setSafetyReport("");
     setExecutionReport("");
@@ -620,7 +620,7 @@ export default function Home() {
               const eventData = JSON.parse(line.slice(6));
               
               if (eventData.type === "log") {
-                setSwarmLogs((prev) => [
+                setSafeGuardLogs((prev) => [
                   ...prev,
                   { agent: eventData.agent, text: eventData.text },
                 ]);
@@ -643,7 +643,7 @@ export default function Home() {
                 }
               } else if (eventData.type === "report") {
                 setFinalReport(eventData.report);
-                const parsed = parseSwarmReport(eventData.report);
+                const parsed = parseSafeGuardReport(eventData.report);
                 setSafetyReport(parsed.safety);
                 setExecutionReport(parsed.execution);
                 setDetectiveReport(parsed.detective);
@@ -792,7 +792,7 @@ export default function Home() {
         body: JSON.stringify(prompts),
       });
       if (resp.ok) {
-        alert("Swarm agent prompt rules updated on disk. Background daemons loaded prompts successfully!");
+        alert("SafeGuard agent prompt rules updated on disk. Background daemons loaded prompts successfully!");
       } else {
         alert("Failed to save prompts.");
       }
@@ -840,7 +840,7 @@ export default function Home() {
     }
 
     const parseTokens = (txt: string) => {
-      const parts = txt.split(/\*\*([^*]+?)\*\?/g);
+      const parts = txt.split(/\*\*([^*]+?)\*\*/g);
       return parts.map((part, index) => ({
         text: part,
         isBold: index % 2 === 1
@@ -943,11 +943,11 @@ export default function Home() {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(15);
     setTxt(WHITE);
-    doc.text("TechCare Swarm", margin + 7, 12);
+    doc.text("TechCare SafeGuard", margin + 7, 12);
     doc.setFont("helvetica", "normal");
     doc.setFontSize(8.5);
     setTxt([180, 200, 240]);
-    doc.text("AI-Powered Industrial Incident Report", margin + 7, 18.5);
+    doc.text("AI-Powered Industrial Incident Containment", margin + 7, 18.5);
     // Right-side timestamp
     doc.setFontSize(7.5);
     setTxt([148, 163, 184]);
@@ -969,57 +969,132 @@ export default function Home() {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7.5);
     setTxt(MUTED);
-    doc.text("Generated by TechCare Swarm Autonomous Agent Cluster", margin + 8, y + 11.5);
+    doc.text("Generated by TechCare SafeGuard Autonomous Agent Cluster", margin + 8, y + 11.5);
     y += 22;
 
     // ── REPORT BODY ───────────────────────────────────────────
     const lines = reportText.replace(/\\n/g, "\n").split("\n");
     let inSection = false;
     let hasComplianceSignOff = false;
+    let inCodeBlock = false;
+    let codeBlockLines: string[] = [];
 
     for (const rawLine of lines) {
       const line = rawLine.trim();
-      if (!line) { y += inSection ? 2 : 3; continue; }
+
+      // Check code block
+      if (line.startsWith("```")) {
+        if (!inCodeBlock) {
+          inCodeBlock = true;
+          codeBlockLines = [];
+        } else {
+          inCodeBlock = false;
+          if (codeBlockLines.length > 0) {
+            doc.setFont("courier", "normal");
+            doc.setFontSize(8);
+            const codeLineHeight = 4.2;
+            const padding = 3;
+            let totalLinesNeeded = 0;
+            const wrappedLinesList: string[][] = [];
+
+            codeBlockLines.forEach(cl => {
+              const wrapped = doc.splitTextToSize(cl, contentW - 8);
+              wrappedLinesList.push(wrapped);
+              totalLinesNeeded += wrapped.length;
+            });
+
+            const blockH = totalLinesNeeded * codeLineHeight + padding * 2;
+            checkY(blockH);
+
+            // Draw box
+            setFill([248, 250, 252]);
+            setDraw([226, 232, 240]);
+            doc.setLineWidth(0.25);
+            doc.roundedRect(margin, y, contentW, blockH, 1, 1, "FD");
+
+            y += padding;
+
+            // Render courier text
+            setTxt([51, 65, 85]);
+            wrappedLinesList.forEach(wrapped => {
+              wrapped.forEach(wl => {
+                doc.text(wl, margin + 4, y + 2.8);
+                y += codeLineHeight;
+              });
+            });
+
+            y += padding + 1; // Margin below block
+          }
+        }
+        continue;
+      }
+
+      if (inCodeBlock) {
+        codeBlockLines.push(rawLine); // Keep indentation
+        continue;
+      }
+
+      if (!line) { y += inSection ? 2.5 : 3.5; continue; }
 
       // Horizontal rule
       if (/^---+$/.test(line)) {
-        checkY(5);
+        checkY(6);
         setDraw(DIVIDER);
-        doc.setLineWidth(0.3);
-        doc.line(margin, y, pageW - margin, y);
-        y += 5; continue;
+        doc.setLineWidth(0.35);
+        doc.line(margin, y + 2, pageW - margin, y + 2);
+        y += 6; continue;
       }
 
-      // Section heading detection
+      // Heading detection
+      const isH1 = line.startsWith("# ");
+      const isH2 = line.startsWith("## ");
+      const isH3 = line.startsWith("### ");
+      
       const secM  = line.match(/^\*\*([^*]+?)\*\*:?\s*(.*)$/) || line.match(/^([A-Z][A-Z ,&'\-/]{2,}):\s*(.*)$/);
-      const isH3  = /^#{1,3}\s/.test(line);
       const isSec = secM && /^[A-Z0-9 &'\-/:]+$/.test((secM[1] || "").trim());
 
-      if (isSec || isH3) {
-        checkY(14);
-        const rawLabel = isSec ? secM![1].trim().replace(/:/g, "") : line.replace(/^#+\s*/, "").replace(/:$/, "").trim();
-        const rest     = isSec ? (secM![2] || "").trim() : "";
+      if (isH1) {
+        checkY(16);
+        const rawLabel = line.replace(/^#\s+/, "").replace(/:$/, "").trim();
         const label = formatHeading(rawLabel);
         
         if (label === "Compliance Sign-off") {
           hasComplianceSignOff = true;
         }
 
-        // Section card background + left bar
+        // Main H1 Section card background + left bar
         setFill(LIGHT);
-        doc.roundedRect(margin, y - 1, contentW, 9, 1.5, 1.5, "F");
+        doc.roundedRect(margin, y - 1, contentW, 10, 1.5, 1.5, "F");
         setFill(BLUE);
-        doc.roundedRect(margin, y - 1, 3, 9, 1, 1, "F");
+        doc.roundedRect(margin, y - 1, 3.5, 10, 1, 1, "F");
         doc.setFont("helvetica", "bold");
-        doc.setFontSize(8.5);
+        doc.setFontSize(9);
         setTxt(BLUE);
-        doc.text(label, margin + 6, y + 5.2);
+        doc.text(label, margin + 6, y + 5.8);
         inSection = true;
-        y += 11;
+        y += 13;
+        continue;
+      }
 
+      if (isH2 || isH3 || isSec) {
+        checkY(11);
+        const rawLabel = isH2 ? line.replace(/^##\s+/, "") : (isH3 ? line.replace(/^###\s+/, "") : secM![1]);
+        const label = formatHeading(rawLabel.replace(/:$/, "").trim());
+        
+        if (label === "Compliance Sign-off") {
+          hasComplianceSignOff = true;
+        }
+
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10);
+        setTxt(DARK);
+        doc.text(label, margin + 4, y + 3);
+        y += 7;
+
+        const rest = isSec ? (secM![2] || "").trim() : "";
         if (rest) {
-          writeWrappedInlineText(rest, margin + 4, contentW - 4, 4.8);
-          y += 1;
+          writeWrappedInlineText(rest, margin + 4, contentW - 4, 5.5);
+          y += 3;
         }
         continue;
       }
@@ -1030,17 +1105,17 @@ export default function Home() {
       if (bulletMatch || numMatch) {
         const content = bulletMatch ? bulletMatch[1] : numMatch![2];
         if (numMatch) {
-          writeWrappedInlineText(content, margin + 8, contentW - 10, 4.8, { type: "number", numStr: `${numMatch[1]}.` });
+          writeWrappedInlineText(content, margin + 8, contentW - 10, 5, { type: "number", numStr: `${numMatch[1]}.` });
         } else {
-          writeWrappedInlineText(content, margin + 8, contentW - 10, 4.8, { type: "bullet" });
+          writeWrappedInlineText(content, margin + 8, contentW - 10, 5, { type: "bullet" });
         }
-        y += 1.5;
+        y += 2.5;
         continue;
       }
 
       // Plain paragraph
-      writeWrappedInlineText(line, margin + 4, contentW - 4, 5);
-      y += 1;
+      writeWrappedInlineText(line, margin + 4, contentW - 4, 5.5);
+      y += 3.5;
     }
 
     if (hasComplianceSignOff) {
@@ -1086,7 +1161,7 @@ export default function Home() {
       doc.setFont("helvetica", "normal");
       doc.setFontSize(7);
       setTxt([148, 163, 184]);
-      doc.text("TechCare Swarm  |  Powered by Groq Llama & Band SDK", margin, pageH - 6);
+      doc.text("TechCare SafeGuard  |  Powered by Groq Llama & Band SDK", margin, pageH - 6);
       doc.text(`Page ${p} of ${totalPages}`, pageW - margin, pageH - 6, { align: "right" });
     }
 
@@ -1116,7 +1191,7 @@ export default function Home() {
 
   return (
     <div className="flex h-screen w-full bg-[#f6f8fc] overflow-hidden text-slate-800 font-sans">
-      {/* ---------------- SIDEBAR (Swarm Control Panel) ---------------- */}
+      {/* ---------------- SIDEBAR (SafeGuard Control Panel) ---------------- */}
       <aside className="w-80 bg-[#f6f8fc] border-r border-slate-200 flex flex-col justify-between p-6 shrink-0 z-10">
         <div className="space-y-6 flex-1 flex flex-col overflow-hidden">
           {/* Dashboard Header */}
@@ -1126,7 +1201,7 @@ export default function Home() {
             </div>
             <div>
               <h2 className="font-bold text-base tracking-tight text-slate-800">
-                TechCare Swarm
+                TechCare SafeGuard
               </h2>
               <p className="text-[9px] text-[#0b57d0] font-bold uppercase tracking-wider">
                 Industrial Containment
@@ -1192,7 +1267,7 @@ export default function Home() {
 
         {/* Footer Info */}
         <div className="text-[10px] text-slate-500 space-y-1 mt-6 border-t border-slate-200 pt-4">
-          <div className="font-semibold text-slate-700">TechCare Swarm Engine</div>
+          <div className="font-semibold text-slate-700">TechCare SafeGuard Engine</div>
           <div>Inference: Llama-3.3-70B on Groq</div>
           <div>Protocols: Band SDK WebSockets</div>
           <button
@@ -1216,7 +1291,7 @@ export default function Home() {
             {isRunning ? (
               <span className="text-[10px] px-2 py-0.5 bg-red-500/10 text-red-600 border border-red-500/20 font-bold rounded-full animate-pulse flex items-center gap-1">
                 <Zap className="h-3 w-3 fill-red-600" />
-                Swarm Active
+                SafeGuard Active
               </span>
             ) : (
               <span className="text-[10px] px-2 py-0.5 bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 font-bold rounded-full flex items-center gap-1">
@@ -1266,7 +1341,7 @@ export default function Home() {
                     <span>1. Telemetry Alert Scenario Presets</span>
                   </h3>
                   <p className="text-xs text-slate-500 mt-1 ml-6.5">
-                    Click a blueprint preset below to immediately test the swarm containment protocol:
+                    Click a blueprint preset below to immediately test the SafeGuard containment protocol:
                   </p>
                 </div>
 
@@ -1304,7 +1379,7 @@ export default function Home() {
                         className="rounded border-slate-300 text-[#0b57d0] focus:ring-[#0b57d0] h-3.5 w-3.5"
                       />
                       <span className="text-[10px] font-semibold text-slate-500">
-                        Auto-Trigger Swarm on selection
+                        Auto-Trigger SafeGuard on selection
                       </span>
                     </label>
                   </div>
@@ -1353,17 +1428,17 @@ export default function Home() {
                   </div>
 
                   <button
-                    onClick={() => triggerSwarm()}
+                    onClick={() => triggerSafeGuard()}
                     disabled={isRunning || !alertInput.trim()}
                     className="flex items-center gap-2 text-xs font-bold bg-[#0b57d0] hover:bg-[#0b57d0]/90 text-white py-2.5 px-6 rounded-full transition shadow-md hover:shadow-lg disabled:opacity-40"
                   >
                     <Play className="h-4 w-4 fill-white text-white" />
-                    <span>Trigger Containment Swarm</span>
+                    <span>Trigger Containment SafeGuard</span>
                   </button>
                 </div>
               </section>
 
-              {/* Swarm logs & report display */}
+              {/* SafeGuard logs & report display */}
               <div className="space-y-4">
                 {/* Layout Mode Toggles */}
                 <div className="flex items-center justify-between border-b border-slate-200 pb-3 mb-1 shrink-0">
@@ -1377,7 +1452,7 @@ export default function Home() {
                       }`}
                     >
                       <Terminal className="h-3.5 w-3.5" />
-                      <span>Swarm Live Console</span>
+                      <span>SafeGuard Live Console</span>
                     </button>
                     <button
                       onClick={() => setResultsView("report")}
@@ -1413,11 +1488,11 @@ export default function Home() {
 
                 {/* View Rendering */}
                 {resultsView === "console" ? (
-                  /* Live Swarm Console - Full Width */
+                  /* Live SafeGuard Console - Full Width */
                   <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm flex flex-col h-[520px]">
                     <div className="flex justify-between items-center mb-3 shrink-0">
                       <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                        Swarm Real-Time Audit Console
+                        SafeGuard Real-Time Audit Console
                       </h3>
                       <div className="flex items-center gap-1.5 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
                         <button
@@ -1444,20 +1519,20 @@ export default function Home() {
                       </div>
                     </div>
                     <div className="flex-1 bg-slate-50 border border-slate-200 rounded-xl p-5 overflow-y-auto space-y-3.5 font-mono">
-                      {swarmLogs.length === 0 ? (
+                      {safeGuardLogs.length === 0 ? (
                         isRunning ? (
                           <div className="h-full flex flex-col items-center justify-center text-[#0b57d0] space-y-2">
                             <Loader2 className="h-8 w-8 animate-spin opacity-80" />
-                            <p className="text-xs font-semibold animate-pulse">Swarm is active. Awaiting real-time telemetry log feed...</p>
+                            <p className="text-xs font-semibold animate-pulse">SafeGuard is active. Awaiting real-time telemetry log feed...</p>
                           </div>
                         ) : (
                           <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-2">
                             <Terminal className="h-8 w-8 opacity-20" />
-                            <p className="text-xs">Swarm is idle. Telemetry log stream will load here.</p>
+                            <p className="text-xs">SafeGuard is idle. Telemetry log stream will load here.</p>
                           </div>
                         )
                       ) : (
-                        swarmLogs.map((log, index) => {
+                        safeGuardLogs.map((log, index) => {
                           let borderClass = "border-l-2 border-l-blue-500";
                           let badgeClass = "bg-blue-50 text-blue-700 border border-blue-200/50";
                           if (log.agent.includes("Analyst")) {
@@ -1539,7 +1614,7 @@ export default function Home() {
                       {!safetyReport ? (
                         <div className="h-[400px] flex flex-col items-center justify-center text-slate-400 space-y-2 bg-white border border-slate-200 rounded-2xl shadow-sm">
                           <FileText className="h-8 w-8 opacity-20" />
-                          <p className="text-xs">Waiting for swarm Safety Auditor compliance approval...</p>
+                          <p className="text-xs">Waiting for SafeGuard Safety Auditor compliance approval...</p>
                         </div>
                       ) : (
                         <div className="text-slate-700 h-full">
@@ -1567,14 +1642,14 @@ export default function Home() {
                                 </div>
                               </div>
 
-                              {/* Right Column: Automated Swarm Containment & RCA Results (Span 5) */}
+                              {/* Right Column: Automated SafeGuard Containment & RCA Results (Span 5) */}
                               <div className="lg:col-span-5 flex flex-col gap-4">
                                 {/* Execution Logs Block */}
                                 <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm flex flex-col min-h-[160px]">
                                   <div className="flex items-center justify-between pb-2 border-b border-slate-100 mb-3">
                                     <div className="flex items-center gap-2">
                                       <Activity className="h-4.5 w-4.5 text-purple-600" />
-                                      <h3 className="font-bold text-xs text-slate-800">Swarm Actuator Execution Logs</h3>
+                                      <h3 className="font-bold text-xs text-slate-800">SafeGuard Actuator Execution Logs</h3>
                                     </div>
                                     {parsedReport.execution ? (
                                       <span className="text-[10px] bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full font-bold">SUCCESS</span>
@@ -1935,7 +2010,7 @@ export default function Home() {
                   <span>Audit Trail & Historical Telemetry Logs</span>
                 </h3>
                 <p className="text-xs text-slate-500 mt-2">
-                  Browse and audit past swarm emergency executions saved securely in the backend logs:
+                  Browse and audit past SafeGuard emergency executions saved securely in the backend logs:
                 </p>
               </div>
 
@@ -2040,7 +2115,7 @@ export default function Home() {
                           <div className="font-bold text-slate-800 text-sm">{selectedHistoryItem.equipment}</div>
                         </div>
                         <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl text-xs space-y-1">
-                          <div className="font-bold text-slate-400 uppercase text-[9px]">Swarm Latency</div>
+                          <div className="font-bold text-slate-400 uppercase text-[9px]">SafeGuard Latency</div>
                           <div className="font-bold text-slate-800 text-sm">{selectedHistoryItem.latency}s</div>
                         </div>
                         <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl text-xs space-y-1">
@@ -2065,7 +2140,7 @@ export default function Home() {
 
                       {/* Event steps */}
                       <div className="space-y-2">
-                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Swarm Conversation Logs:</div>
+                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">SafeGuard Conversation Logs:</div>
                         <div className="space-y-2 bg-slate-50 p-4 rounded-xl border border-slate-200 max-h-48 overflow-y-auto font-mono text-xs">
                           {selectedHistoryItem.logs.map((log: any, idx: number) => (
                             <div key={idx} className="border-b border-slate-100 pb-2 last:border-b-0 text-slate-700">
@@ -2078,7 +2153,7 @@ export default function Home() {
 
                       {/* Audit report details */}
                       <div className="space-y-2">
-                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Swarm Reports & Containment Results:</div>
+                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">SafeGuard Reports & Containment Results:</div>
                         {!selectedHistoryItem.report ? (
                           <div className="bg-slate-50 border border-slate-200 p-5 rounded-xl text-xs text-slate-400 text-center py-8">
                             No report available.

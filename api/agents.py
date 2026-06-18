@@ -16,7 +16,7 @@ load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("TechCareSwarm")
+logger = logging.getLogger("TechCareSafeGuard")
 
 # Initialize Groq Client
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -241,7 +241,7 @@ class CoordinatorAdapter(SimpleAdapter[list]):
                     content = f.read()
                 # Extract the Coordinator section
                 parts = content.split("## 2. Systems Analyst Agent")
-                coordinator_part = parts[0].replace("# Swarm Agent Definitions & Rules", "").strip()
+                coordinator_part = parts[0].replace("# SafeGuard Agent Definitions & Rules", "").strip()
                 return coordinator_part
             except Exception as e:
                 logger.error(f"Error loading prompt_rules.md: {e}")
@@ -303,7 +303,7 @@ class CoordinatorAdapter(SimpleAdapter[list]):
                 mentions=[self.analyst_id]
             )
         except Exception as e:
-            logger.error(f"Error executing Coordinator Swarm actions: {e}")
+            logger.error(f"Error executing Coordinator SafeGuard actions: {e}")
             mentions = [msg.sender_id] if getattr(msg, "sender_id", None) else []
             try:
                 await tools.send_message(
@@ -1265,7 +1265,7 @@ class ForensicAdapter(SimpleAdapter[list]):
     async def _perform_investigation(self, room_history: str, execution_status: str, mock_mode: bool = False) -> str:
         prompt = (
             f"{self.system_prompt}\n\n"
-            f"--- SWARM CHAT HISTORY ---\n"
+            f"--- SAFEGUARD CHAT HISTORY ---\n"
             f"{room_history}\n"
             f"---------------------------\n\n"
             f"--- EXECUTION STATUS ---\n"
@@ -1285,7 +1285,7 @@ class ForensicAdapter(SimpleAdapter[list]):
             return (
                 "**INCIDENT TIMELINE:**\n"
                 "- 13:20:00: Critical alert triggered.\n"
-                "- 13:20:05: Swarm activated; Systems Analyst proposed coolant loop valves.\n"
+                "- 13:20:05: SafeGuard activated; Systems Analyst proposed coolant loop valves.\n"
                 "- 13:20:08: Safety Auditor approved plan.\n"
                 "- 13:20:10: Execution Agent successfully ran containment.\n\n"
                 "**ROOT CAUSE ANALYSIS:**\n"
@@ -1424,7 +1424,7 @@ class KnowledgeCuratorAdapter(SimpleAdapter[list]):
             except Exception as e:
                 logger.error(f"Error in Knowledge Curator LLM / DB write: {e}")
         else:
-            optimized_spec = spec_before + "\n\n[PREVENTATIVE SAFEGUARD ADDED BY SWARM]: Inspect fan motor and valve seals every 30 days."
+            optimized_spec = spec_before + "\n\n[PREVENTATIVE SAFEGUARD ADDED BY SAFEGUARD]: Inspect fan motor and valve seals every 30 days."
             changes_made = "Added recommendation for 30-day preventative maintenance cycle."
             ENTERPRISE_KNOWLEDGE_BASE.update_spec(equipment_name, optimized_spec)
 
@@ -1459,18 +1459,18 @@ def create_curator_agent(agent_id: str, api_key: str) -> Agent:
         api_key=api_key
     )
 
-# --- Multi-Agent Swarm Orchestrator ---
+# --- Multi-Agent SafeGuard Orchestrator ---
 
 async def trigger_incident_async(alert_text: str, status_callback=None, delay: float = 0.1, live_mode: bool = True, mock_mode: bool = False) -> str:
     """
-    Orchestrates the multi-agent swarm workflow.
+    Orchestrates the multi-agent SafeGuard workflow.
     Supports both offline simulation mode and online Band SDK Agent API interactions.
     
     Live mode uses the Agent API (works on all plans) instead of the Human API
     (which requires Enterprise plan). The Coordinator's agent token is used to:
     1. Create an incident room
     2. Add the Systems Analyst as a participant
-    3. Send the raw alert text to trigger the swarm chain
+    3. Send the raw alert text to trigger the SafeGuard chain
     4. Poll messages until the final LEARNING_SUMMARY appears
     """
     import time
@@ -1563,10 +1563,10 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
                 alert_msg_id = msg_resp.json()["data"]["id"]
                 
                 if status_callback:
-                    await status_callback("Coordinator Agent", f"Alert forwarded to Systems Analyst (Message: {alert_msg_id[:8]}...). Monitoring swarm collaboration...")
+                    await status_callback("Coordinator Agent", f"Alert forwarded to Systems Analyst (Message: {alert_msg_id[:8]}...). Monitoring SafeGuard collaboration...")
                     await asyncio.sleep(delay)
                     
-                # 4. Poll messages in the incident room for the full swarm chain
+                # 4. Poll messages in the incident room for the full SafeGuard chain
                 seen_messages = {alert_msg_id}
                 start_time = time.time()
                 timeout = 240.0  # 4 minutes timeout for 6-agent execution chain
@@ -1671,7 +1671,7 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
                 if not safety_report and not learning_summary:
                     elapsed = int(time.time() - start_time)
                     raise TimeoutError(
-                        f"Swarm coordination timed out after {elapsed}s. "
+                        f"SafeGuard coordination timed out after {elapsed}s. "
                         f"Saw {len(seen_messages)} messages but no reports. "
                         "Ensure 'run_agents.py' is running and agents are ONLINE."
                     )
@@ -1679,7 +1679,7 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
                 # Build combined response
                 if learning_summary:
                     report = (
-                        f"# TechCare Swarm Final Incident Summary\n\n"
+                        f"# TechCare SafeGuard Final Incident Summary\n\n"
                         f"{safety_report}\n\n"
                         f"---\n\n"
                         f"# Execution Log & System Containment Status\n\n"
@@ -1700,7 +1700,7 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
         except TimeoutError:
             raise
         except Exception as e:
-            logger.error(f"Error in Live Band swarm: {e}")
+            logger.error(f"Error in Live Band SafeGuard: {e}")
             raise e
             
         return report
@@ -1840,7 +1840,7 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
 
         # Combine reports for the user
         combined_report = (
-            f"# TechCare Swarm Final Incident Summary\n\n"
+            f"# TechCare SafeGuard Final Incident Summary\n\n"
             f"{report}\n\n"
             f"---\n\n"
             f"# Execution Log & System Containment Status\n\n"

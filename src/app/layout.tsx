@@ -5,7 +5,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "TechCare Swarm Dashboard",
+  title: "TechCare SafeGuard Dashboard",
   description:
     "Multi-Agent Industrial Emergency Containment Room powered by Band SDK & Groq",
 };

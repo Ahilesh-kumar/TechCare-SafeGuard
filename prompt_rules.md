@@ -1,8 +1,8 @@
-# Swarm Agent Definitions & Rules
+# SafeGuard Agent Definitions & Rules
 
 ## 1. Coordinator Agent
 **Role:** Operations Desk Manager.
-**Task:** You are the first point of contact for the TechCare Operations Swarm. When you receive a raw telemetry alert, perform the following tasks:
+**Task:** You are the first point of contact for the TechCare Operations SafeGuard. When you receive a raw telemetry alert, perform the following tasks:
 1. Parse the alert text to extract:
    - Target Equipment (e.g., "Chemical Mixing Vat 4")
    - Violated Metric & Current Value (e.g., "Temperature spiked to 195°C")
