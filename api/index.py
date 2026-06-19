@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 import sys
-import uuid
 import logging
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request, Depends, Security
@@ -18,9 +17,9 @@ from slowapi.errors import RateLimitExceeded
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    from agents import trigger_incident_async, invalidate_settings_cache, hitl_events, hitl_decisions
+    from agents import trigger_incident_async, invalidate_settings_cache, hitl_events, hitl_decisions, settings_lock
 except ImportError:
-    from api.agents import trigger_incident_async, invalidate_settings_cache, hitl_events, hitl_decisions
+    from api.agents import trigger_incident_async, invalidate_settings_cache, hitl_events, hitl_decisions, settings_lock
 
 try:
     import db
@@ -31,6 +30,10 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("TechCareSafeGuardAPI")
 
+# Quiet down verbose third-party loggers
+for log_name in ["httpx", "httpcore", "websockets", "aiosqlite", "urllib3"]:
+    logging.getLogger(log_name).setLevel(logging.WARNING)
+
 # Rate Limiter
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI()
@@ -40,12 +43,29 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Bearer Token Verification
 security = HTTPBearer(auto_error=False)
 
-async def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(security)):
+async def verify_api_key(request: Request, credentials: HTTPAuthorizationCredentials = Security(security)):
     secret_key = os.environ.get("API_SECRET_KEY")
+    
+    # Identify if request originates from localhost/loopback
+    is_local = False
+    if request.client:
+        host = request.client.host
+        is_local = host in ("127.0.0.1", "localhost", "::1", "testclient")
+        
     if not secret_key:
-        return None
+        if is_local:
+            logger.warning("API_SECRET_KEY is not set. Allowing request because it originates from localhost.")
+            return None
+        else:
+            logger.error("API_SECRET_KEY is not set in environment, and request is external. Rejecting for security.")
+            raise HTTPException(
+                status_code=500,
+                detail="Security configuration error: API_SECRET_KEY is not set on the server."
+            )
+            
     if not credentials or credentials.credentials != secret_key:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        
     return credentials.credentials
 
 @app.get("/")
@@ -502,34 +522,36 @@ async def post_prompts(payload: PromptsPayload, authenticated: str = Depends(ver
 @app.get("/api/settings")
 async def get_settings():
     if os.path.exists(SETTINGS_PATH):
-        try:
-            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                # Map legacy models to currently supported dropdown values
-                models = data.get("models", {})
-                for k, v in list(models.items()):
-                    if v == "llama3-70b-8192":
-                        models[k] = "llama-3.3-70b-versatile"
-                return data
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to read settings: {str(e)}")
+        async with settings_lock:
+            try:
+                with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    # Map legacy models to currently supported dropdown values
+                    models = data.get("models", {})
+                    for k, v in list(models.items()):
+                        if v == "llama3-70b-8192":
+                            models[k] = "llama-3.3-70b-versatile"
+                    return data
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to read settings: {str(e)}")
     return {}
 
 @app.post("/api/settings")
 async def update_settings(payload: dict, authenticated: str = Depends(verify_api_key)):
     try:
         existing = {}
-        if os.path.exists(SETTINGS_PATH):
-            try:
-                with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
-                    existing = json.load(f)
-            except Exception:
-                pass
-        for k, v in payload.items():
-            existing[k] = v
-        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-            json.dump(existing, f, indent=4, ensure_ascii=False)
-        invalidate_settings_cache()
+        async with settings_lock:
+            if os.path.exists(SETTINGS_PATH):
+                try:
+                    with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                        existing = json.load(f)
+                except Exception:
+                    pass
+            for k, v in payload.items():
+                existing[k] = v
+            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+                json.dump(existing, f, indent=4, ensure_ascii=False)
+            invalidate_settings_cache()
         return existing
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save settings: {str(e)}")
@@ -828,6 +850,9 @@ async def reset_sandbox(authenticated: str = Depends(verify_api_key)):
             "dark_mode": False,
             "enable_deterministic_fallback": True,
             "fallback_timeout": 90.0,
+            "android_push_notifications": False,
+            "android_device_token": "",
+            "android_min_alert_level": "WARNING",
             "models": {
                 "coordinator": "llama-3.1-8b-instant",
                 "analyst": "llama-3.3-70b-versatile",
@@ -857,14 +882,198 @@ async def reset_sandbox(authenticated: str = Depends(verify_api_key)):
                 "total_cost": 0.0
             }
         }
-        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-            json.dump(default_settings, f, indent=4, ensure_ascii=False)
-            
-        invalidate_settings_cache()
+        async with settings_lock:
+            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+                json.dump(default_settings, f, indent=4, ensure_ascii=False)
+            invalidate_settings_cache()
         return {"status": "ok", "message": "Database, settings, and prompts restored to factory defaults."}
     except Exception as e:
         logger.exception("Reset failed:")
         raise HTTPException(status_code=500, detail=f"Reset failed: {str(e)}")
+
+@app.post("/api/reset/history")
+async def reset_history(authenticated: str = Depends(verify_api_key)):
+    try:
+        await db.clear_history()
+        return {"status": "ok", "message": "Telemetry history logs cleared successfully."}
+    except Exception as e:
+        logger.exception("Reset history failed:")
+        raise HTTPException(status_code=500, detail=f"Reset history failed: {str(e)}")
+
+@app.post("/api/reset/blueprints")
+async def reset_blueprints(authenticated: str = Depends(verify_api_key)):
+    try:
+        await db.clear_blueprints()
+        await db.migrate_blueprints()
+        return {"status": "ok", "message": "Equipment blueprints reset to defaults successfully."}
+    except Exception as e:
+        logger.exception("Reset blueprints failed:")
+        raise HTTPException(status_code=500, detail=f"Reset blueprints failed: {str(e)}")
+
+@app.post("/api/reset/prompts")
+async def reset_prompts(authenticated: str = Depends(verify_api_key)):
+    try:
+        default_prompts = (
+            "# SafeGuard Agent Definitions & Rules\n\n"
+            "## 1. Coordinator Agent\n"
+            "**Role:** Operations Desk Manager.\n"
+            "**Task:** You are the first point of contact for the TechCare Operations SafeGuard. When you receive a raw telemetry alert, perform the following tasks:\n"
+            "1. Parse the alert text to extract:\n"
+            "   - Target Equipment (e.g., \"Chemical Mixing Vat 4\")\n"
+            "   - Violated Metric & Current Value (e.g., \"Temperature spiked to 195°C\")\n"
+            "   - Gravity/Severity (e.g., \"Critical\")\n"
+            "2. If the equipment name is ambiguous or missing, request the Systems Analyst to verify it using the active equipment list.\n"
+            "3. Open the incident chat room and dispatch the parsed alert. Prefix your message with `INCIDENT_ALERT:` followed by a JSON payload:\n"
+            "   ```json\n"
+            "   {\n"
+            "     \"equipment\": \"Equipment Name\",\n"
+            "     \"metric\": \"Metric Name\",\n"
+            "     \"current_value\": \"Value\",\n"
+            "     \"raw_alert\": \"Original Alert Text\"\n"
+            "   }\n"
+            "   ```\n"
+            "4. Mention the Systems Analyst by ID to trigger the next step. Do not attempt to solve the problem yourself.\n\n"
+            "## 2. Systems Analyst Agent\n"
+            "**Role:** Lead Technical Engineer.\n"
+            "**Task:** Receive the alert from the Coordinator. Your tasks are:\n"
+            "1. Look up the matching equipment in the `ENTERPRISE_KNOWLEDGE_BASE`.\n"
+            "2. Extract the critical safety thresholds and automated procedures.\n"
+            "3. Format your response into structured reasoning sections using these tags:\n"
+            "   - `<diagnostics>`: Compare the current telemetry value with the critical database threshold. Quantify the exceedance (e.g., \"Temp is 15°C above the 180°C limit\"). List potential failure modes (sensor drift, system load, etc.).\n"
+            "   - `<containment_plan>`: Detail the exact step-by-step mitigation actions based ONLY on the database rules. In your containment plan, you MUST strictly satisfy the Safety Auditor's compliance checklist. Follow these format and content requirements:\n"
+            "      a. Reference the exact critical thresholds from the knowledge base.\n"
+            "      b. Follow the exact action sequence outlined in the database rules in order (e.g., ACTION 1, then ACTION 2, then ACTION 3).\n"
+            "      c. For every single action step, you MUST include a corresponding verification method. Write each step strictly in this format:\n"
+            "         - **Step [N]**: Action: [Mitigation step detail, including specific PPE requirements like heat-resistant gloves and safety glasses if there is human intervention, and LOTO procedures if there is electrical isolation/maintenance]. Verification: [Concrete method to verify the action succeeded].\n"
+            "         Example:\n"
+            "         - **Step 1**: Action: Automatically reduce mixing speed by 50% to prevent further heat generation. Verification: Check mixing speed tachometer readings.\n"
+            "         - **Step 2**: Action: Isolate power supply to the mixing vat and apply lockout/tagout (LOTO) tags to the breaker. Verification: Verify zero voltage on the main power feed.\n"
+            "      d. Explicitly verify electrical/mechanical isolation before any maintenance, physical inspection, or repair step.\n"
+            "      e. Always specify proper PPE (Personal Protective Equipment) requirements (such as heat-resistant gloves, safety glasses, face shields, or fire-resistant gear) for each hazardous step involving human intervention (or explicitly state: \"No PPE required as all actions are completely automated\").\n"
+            "      f. Always include explicit lockout/tagout (LOTO) procedures for any electrical isolation, power disconnection, or mechanical lock steps.\n"
+            "      g. Specify post-action verification and monitoring to confirm containment success.\n"
+            "4. Prefix your output with `TECHNICAL_RESOLUTION:` followed by your structured containment plan, and mention the Safety Auditor by ID.\n"
+            "5. If the Safety Auditor rejects your proposed resolution (`SAFETY_AUDIT_REJECT`), analyze the feedback, revise your technical steps to rectify the safety violations, and submit a revised resolution.\n\n"
+            "## 3. Safety Auditor Agent\n"
+            "**Role:** Compliance Inspector.\n"
+            "**Task:** Review the Analyst's resolution. Ensure it strictly follows the safety protocols. You must perform safety verification checking for:\n"
+            "1. **PPE Checklist:** Ensure appropriate personal protective equipment is specified if any human entry or physical maintenance is required.\n"
+            "2. **LOTO (Lockout/Tagout):** Verify physical power isolation is executed and checked before any physical or mechanical repairs.\n"
+            "3. **Environmental Auditing:** Ensure ventilation, pressure relief, and gas venting are verified before human dispatch.\n"
+            "4. **Containment Verification:** Verify that every proposed containment step has an explicit verification method.\n"
+            "You must output your audit result as a JSON object in one of these two formats:\n\n"
+            "If safety violations are detected:\n"
+            "```json\n"
+            "{\n"
+            "  \"safe\": false,\n"
+            "  \"feedback\": \"Details of the safety violations and clear instructions on what needs to be changed.\",\n"
+            "  \"report\": \"\"\n"
+            "}\n"
+            "```\n\n"
+            "If the resolution is fully safe and compliant:\n"
+            "```json\n"
+            "{\n"
+            "  \"safe\": true,\n"
+            "  \"feedback\": \"\",\n"
+            "  \"report\": \"Finalized incident report formatted as an extremely concise Markdown document. Limit each section to a maximum of 1-2 bullet points or short sentences, focusing only on the absolute essentials and important details. Do not use built-in emojis in titles/headers. Use these exact headers:\\n- **EXECUTIVE SUMMARY:** (Brief overview)\\n- **IMPORTANT STEPS HIGHLIGHTED:** (Top critical actions)\\n- **STEP-BY-STEP ACTION REQUIRED:** (Short steps and LOTO)\\n- **SAFETY PRECAUTIONS:** (Essential precautions)\\n- **CONCLUSION:** (Short sign-off)\"\n"
+            "}\n"
+            "```\n"
+            "Mention the Execution Agent by ID to trigger containment.\n\n"
+            "## 4. Execution Agent\n"
+            "**Role:** Automated Systems Operator.\n"
+            "**Task:** Receive the approved `INCIDENT_REPORT` from the Safety Auditor. Execute the containment actions specified in the report. Your tasks are:\n"
+            "1. Parse the report and simulate executing each step of the containment plan on the mock system.\n"
+            "2. For each step, output a single-line status log. Keep the status output extremely concise and simple:\n"
+            "   Format as a structured telemetry sequence:\n"
+            "   ```text\n"
+            "   [ACTUATOR_EXECUTION_LOG]\n"
+            "   [STEP 1]: VALVE-AUX-COOLING -> OPEN -> SUCCESS\n"
+            "   [STEP 2]: THROTTLE-STATE -> SAFE-ISOLATE -> SUCCESS\n"
+            "   [TELEMETRY_STATUS]: Temperature stabilized below threshold\n"
+            "   ```\n"
+            "3. Confirm that LOTO tags are verified and physical isolation has succeeded.\n"
+            "4. Output the complete log prefixed with `EXECUTION_STATUS:`, and mention the Forensic Investigator by ID.\n\n"
+            "## 5. Forensic Investigator Agent\n"
+            "**Role:** Root Cause Analyst.\n"
+            "**Task:** Receive the `EXECUTION_STATUS` from the Execution Agent. Review the entire chat history (including the initial alert, analyst's drafts, auditor's rejections/approvals, and execution logs). Perform a forensic investigation and output a highly concise Root Cause Analysis (RCA) report prefixed with `FORENSIC_REPORT:` in professional markdown using these exact headers (limit each section to a maximum of 1-2 bullet points or short sentences):\n"
+            "- **INCIDENT CHRONOLOGY:** (Brief timeline summary)\n"
+            "- **ROOT CAUSE CATEGORIZATION:** (Category only)\n"
+            "- **FAILURE MODE ANALYSIS:** (Brief technical explanation)\n"
+            "- **CONTAINMENT VERIFICATION:** (Why it worked)\n"
+            "- **LONG-TERM SYSTEMIC RECOMMENDATIONS:** (Key action items to prevent recurrence)\n"
+            "- **FORENSIC SIGN-OFF:** (RCA validator signature)\n"
+            "Pass the forensic report to the Knowledge Curator.\n\n"
+            "## 6. Knowledge Curator Agent\n"
+            "**Role:** Feedback & Learning Agent.\n"
+            "**Task:** Receive the `FORENSIC_REPORT` from the Forensic Investigator. Analyze the RCA report to extract key learnings, new failure modes, safety threshold adjustments, or preventative actions.\n"
+            "Your instructions are:\n"
+            "1. Carefully read the Forensic RCA Report and identify why the containment action was required.\n"
+            "2. Formulate an optimized version of the equipment specification. Retain the existing specifications, but enrich them by dynamically adding:\n"
+            "   - Specific failure symptoms and threshold exceedance reasons under `CAUTION_WARNING`.\n"
+            "   - Long-term preventative maintenance steps under `PREVENTATIVE_ACTIONS`.\n"
+            "   - Explicit steps to verify containment success under `CONTAINMENT_VERIFICATION`.\n"
+            "3. You must output a JSON object containing two fields:\n"
+            "   - `optimized_spec`: The complete, updated specification string incorporating the new guidelines. Keep the additions extremely concise (1-2 sentences/bullets per field).\n"
+            "   - `changes_made`: A brief, high-level summary of the updates made to the database.\n"
+            "Do not include the prefix 'LEARNING_SUMMARY:' in the completion body.\n"
+        )
+        with open(PROMPTS_PATH, "w", encoding="utf-8") as f:
+            f.write(default_prompts)
+        return {"status": "ok", "message": "Agent system rules reset to defaults successfully."}
+    except Exception as e:
+        logger.exception("Reset prompts failed:")
+        raise HTTPException(status_code=500, detail=f"Reset prompts failed: {str(e)}")
+
+@app.post("/api/reset/settings")
+async def reset_settings(authenticated: str = Depends(verify_api_key)):
+    try:
+        default_settings = {
+            "company_name": "TechCare SafeGuard",
+            "facility_name": "Containment Facility Sector 4",
+            "safety_officer_email": "safety@techcare.internal",
+            "dark_mode": False,
+            "enable_deterministic_fallback": True,
+            "fallback_timeout": 90.0,
+            "android_push_notifications": False,
+            "android_device_token": "",
+            "android_min_alert_level": "WARNING",
+            "models": {
+                "coordinator": "llama-3.1-8b-instant",
+                "analyst": "llama-3.3-70b-versatile",
+                "auditor": "llama-3.3-70b-versatile",
+                "execution": "llama-3.1-8b-instant",
+                "forensic": "llama-3.3-70b-versatile",
+                "curator": "llama-3.1-8b-instant"
+            },
+            "temperatures": {
+                "coordinator": 0.0,
+                "analyst": 0.0,
+                "auditor": 0.0,
+                "execution": 0.0,
+                "forensic": 0.0,
+                "curator": 0.2
+            },
+            "max_tokens": {
+                "coordinator": 80,
+                "analyst": 450,
+                "auditor": 450,
+                "execution": 450,
+                "forensic": 450,
+                "curator": 450
+            },
+            "cost_tracker": {
+                "total_tokens": 0,
+                "total_cost": 0.0
+            }
+        }
+        async with settings_lock:
+            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+                json.dump(default_settings, f, indent=4, ensure_ascii=False)
+            invalidate_settings_cache()
+        return {"status": "ok", "message": "Calibration settings reset to defaults successfully."}
+    except Exception as e:
+        logger.exception("Reset settings failed:")
+        raise HTTPException(status_code=500, detail=f"Reset settings failed: {str(e)}")
 
 # --- INCIDENT HISTORY & SYSTEM METRICS ENDPOINTS ---
 

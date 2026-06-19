@@ -28,6 +28,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BandAgentRunner")
 
+# Quiet down verbose third-party loggers
+for log_name in ["httpx", "httpcore", "websockets", "aiosqlite", "urllib3"]:
+    logging.getLogger(log_name).setLevel(logging.WARNING)
+
 load_dotenv()
 
 async def run_agent_with_retry(name, agent_factory, *args, startup_delay: float = 0.0, **kwargs):

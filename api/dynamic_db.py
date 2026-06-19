@@ -27,6 +27,7 @@ class DynamicKnowledgeBase(dict):
     """
     def _load(self) -> dict:
         blueprints = {}
+        conn = None
         try:
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
@@ -40,12 +41,15 @@ class DynamicKnowledgeBase(dict):
             cursor.execute("SELECT name, spec FROM blueprints")
             for name, spec in cursor.fetchall():
                 blueprints[name] = spec
-            conn.close()
         except Exception as e:
             print(f"Error loading blueprints from SQLite: {e}")
+        finally:
+            if conn:
+                conn.close()
         return blueprints
 
     def _save(self, data: dict) -> None:
+        conn = None
         try:
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
@@ -56,9 +60,11 @@ class DynamicKnowledgeBase(dict):
                     (name, format_spec_to_str(spec))
                 )
             conn.commit()
-            conn.close()
         except Exception as e:
             print(f"Error saving blueprints to SQLite: {e}")
+        finally:
+            if conn:
+                conn.close()
 
     def _fuzzy_match(self, query_key: str, blueprints: dict) -> str | None:
         if not query_key:
@@ -133,6 +139,7 @@ class DynamicKnowledgeBase(dict):
         return len(self._load())
 
     def update_spec(self, name: str, spec) -> None:
+        conn = None
         try:
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
@@ -141,18 +148,23 @@ class DynamicKnowledgeBase(dict):
                 (name, format_spec_to_str(spec))
             )
             conn.commit()
-            conn.close()
         except Exception as e:
             print(f"Error updating blueprint in SQLite: {e}")
+        finally:
+            if conn:
+                conn.close()
 
     def delete_spec(self, name: str) -> None:
+        conn = None
         try:
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             cursor.execute("DELETE FROM blueprints WHERE name = ?", (name,))
             conn.commit()
-            conn.close()
         except Exception as e:
             print(f"Error deleting blueprint from SQLite: {e}")
+        finally:
+            if conn:
+                conn.close()
 
 ENTERPRISE_KNOWLEDGE_BASE = DynamicKnowledgeBase()

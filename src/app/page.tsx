@@ -35,6 +35,7 @@ import {
   Sun,
   Moon,
   LayoutGrid,
+  RefreshCw,
 } from "lucide-react";
 
 interface SafeGuardLog {
@@ -292,8 +293,11 @@ export default function Home() {
       dark_mode: dm,
       strict_airgap: false,
       enable_hitl: true,
-    enable_deterministic_fallback: true,
-    fallback_timeout: 90,
+      enable_deterministic_fallback: true,
+      fallback_timeout: 90,
+      android_push_notifications: false,
+      android_device_token: "",
+      android_min_alert_level: "WARNING",
     models: {
       coordinator: "llama-3.1-8b-instant",
       analyst: "llama-3.1-8b-instant",
@@ -365,7 +369,7 @@ export default function Home() {
       });
       if (resp.ok) {
         alert("Global System settings saved successfully.");
-        fetchAllData();
+        fetchAllData(true);
       } else {
         alert("Failed to save settings.");
       }
@@ -430,7 +434,7 @@ export default function Home() {
       });
       if (resp.ok) {
         alert("Agent prompts successfully rolled back to history version.");
-        fetchAllData();
+        fetchAllData(true);
       } else {
         const errorData = await resp.json();
         alert(`Failed to rollback: ${errorData.detail || "Unknown error"}`);
@@ -905,16 +909,20 @@ export default function Home() {
 
   // Fetch all databases & configurations from the API
   // useCallback with empty deps [] — stable reference, never recreated.
-  const fetchAllData = useCallback(async () => {
-    if (hasLoadedRef.current) return;
-    hasLoadedRef.current = true;
-    
-    setBootProgress(0);
-    setBootLogs(["SYSTEM [0.00s] Commencing real-time system initialization..."]);
+  const fetchAllData = useCallback(async (forceSilent?: boolean) => {
+    if (hasLoadedRef.current && !forceSilent) return;
+    if (!forceSilent) {
+      hasLoadedRef.current = true;
+      setShowBootScreen(true);
+      setBootProgress(0);
+      setBootLogs(["SYSTEM [0.00s] Commencing real-time system initialization..."]);
+    }
     
     const addLog = (msg: string, progress: number) => {
-      setBootLogs(prev => [...prev, msg]);
-      setBootProgress(progress);
+      if (!forceSilent) {
+        setBootLogs(prev => [...prev, msg]);
+        setBootProgress(progress);
+      }
     };
 
     try {
@@ -953,7 +961,7 @@ export default function Home() {
       }
 
       // 1. Fetch Blueprints
-      await new Promise(r => setTimeout(r, 200));
+      if (!forceSilent) await new Promise(r => setTimeout(r, 200));
       addLog("SYSTEM [0.10s] Fetching equipment blueprints from registry...", 10);
       const bpRes = await fetch("/api/blueprints");
       let bpCount = 0;
@@ -973,7 +981,7 @@ export default function Home() {
       }
 
       // 2. Fetch Prompts
-      await new Promise(r => setTimeout(r, 200));
+      if (!forceSilent) await new Promise(r => setTimeout(r, 200));
       addLog("SWARM  [0.40s] Loading system instructions for 6 active swarm agents...", 25);
       const prRes = await fetch("/api/prompts");
       if (prRes.ok) {
@@ -985,7 +993,7 @@ export default function Home() {
       }
 
       // 3. Fetch History
-      await new Promise(r => setTimeout(r, 200));
+      if (!forceSilent) await new Promise(r => setTimeout(r, 200));
       addLog("AUDIT  [0.80s] Loading historical incident logs and containment trails...", 40);
       const hiRes = await fetch("/api/history");
       let hiCount = 0;
@@ -999,7 +1007,7 @@ export default function Home() {
       }
 
       // 4. Fetch Metrics
-      await new Promise(r => setTimeout(r, 200));
+      if (!forceSilent) await new Promise(r => setTimeout(r, 200));
       addLog("MEMORY [1.20s] Checking API token usage and cost metrics database...", 55);
       const mtRes = await fetch("/api/metrics");
       if (mtRes.ok) {
@@ -1011,7 +1019,7 @@ export default function Home() {
       }
 
       // 5. Live OT Connection
-      await new Promise(r => setTimeout(r, 200));
+      if (!forceSilent) await new Promise(r => setTimeout(r, 200));
       addLog("OT_BUS [1.60s] Querying live OPC-UA telemetry node registers...", 70);
       const eqRes = await fetch("/api/equipment");
       if (eqRes.ok) {
@@ -1024,13 +1032,13 @@ export default function Home() {
       }
 
       // 6. Global Settings
-      await new Promise(r => setTimeout(r, 200));
+      if (!forceSilent) await new Promise(r => setTimeout(r, 200));
       addLog("CONFIG [2.00s] Loading facility parameters and model configuration...", 85);
       // Settings already loaded and calibrated in Step 0
       addLog("   -> Dark mode state and model failover routes calibrated.", 90);
 
       // 7. Prompt Backup History
-      await new Promise(r => setTimeout(r, 200));
+      if (!forceSilent) await new Promise(r => setTimeout(r, 200));
       addLog("BACKUP [2.30s] Scanning system rollback checkpoints...", 95);
       const histRes = await fetch("/api/prompts/history");
       if (histRes.ok) {
@@ -1044,20 +1052,26 @@ export default function Home() {
         addLog("   -> Warning: rollbacks scan failed.", 100);
       }
 
-      await new Promise(r => setTimeout(r, 200));
-      addLog("SYSTEM [2.60s] Operational desk ready. SafeGuard initialized.", 100);
-
-      // Brief delay to allow viewing success state before fade
-      setTimeout(() => {
+      if (!forceSilent) {
+        await new Promise(r => setTimeout(r, 200));
+        addLog("SYSTEM [2.60s] Operational desk ready. SafeGuard initialized.", 100);
+        setTimeout(() => {
+          setShowBootScreen(false);
+        }, 700);
+      } else {
         setShowBootScreen(false);
-      }, 700);
+      }
 
     } catch (err) {
       console.error("Failed to sync backend sandbox state", err);
-      addLog("ERROR: Connection failed. Swarm console unavailable.", 100);
-      setTimeout(() => {
+      if (!forceSilent) {
+        addLog("ERROR: Connection failed. Swarm console unavailable.", 100);
+        setTimeout(() => {
+          setShowBootScreen(false);
+        }, 1500);
+      } else {
         setShowBootScreen(false);
-      }, 1500);
+      }
     }
   }, []);
 
@@ -1143,20 +1157,7 @@ export default function Home() {
     return `OPC-UA TELEMETRY ALERT [NodeID ns=2;s=Device.Plant.${name.replace(/\s+/g, "")}]: ${name} reporting critical sensor threshold breach. Primary process variable exceeded safe operating limit by 35%. Secondary protective device has not actuated. Manual inspection and immediate containment required per site emergency procedures.`;
   };
 
-  const getPresetIcon = (name: string) => {
-    // Single monochrome icon — category hinted by shape only, no color
-    if (name.includes("Vat") || name.includes("Boiler") || name.includes("Flare") || name.includes("Purge")) 
-      return <Flame className="h-3.5 w-3.5 shrink-0" style={{color:'var(--text-muted)'}} />;
-    if (name.includes("Rack") || name.includes("Server")) 
-      return <Server className="h-3.5 w-3.5 shrink-0" style={{color:'var(--text-muted)'}} />;
-    if (name.includes("Arm") || name.includes("Robotic") || name.includes("Press") || name.includes("Conveyor")) 
-      return <Cpu className="h-3.5 w-3.5 shrink-0" style={{color:'var(--text-muted)'}} />;
-    if (name.includes("Tower") || name.includes("Cooling") || name.includes("Pump") || name.includes("Compressor") || name.includes("Tank")) 
-      return <Droplets className="h-3.5 w-3.5 shrink-0" style={{color:'var(--text-muted)'}} />;
-    if (name.includes("Generator") || name.includes("EV Battery") || name.includes("Transformer") || name.includes("Gas")) 
-      return <Zap className="h-3.5 w-3.5 shrink-0" style={{color:'var(--text-muted)'}} />;
-    return <ShieldAlert className="h-3.5 w-3.5 shrink-0" style={{color:'var(--text-muted)'}} />;
-  };
+
 
   const selectPreset = (name: string) => {
     setErrorMsg("");
@@ -1179,6 +1180,7 @@ export default function Home() {
     const textToProcess = customText !== undefined ? customText : alertInput;
     if (!textToProcess.trim() || isRunning) return;
 
+    let detectedEquipment = "";
     setIsRunning(true);
     setSafeGuardLogs([]);
     setFinalReport("");
@@ -1237,6 +1239,7 @@ export default function Home() {
                     try {
                       const equip = eventData.text.split("Identified equipment: **")[1].split("**")[0];
                       setActiveEquipment(equip);
+                      detectedEquipment = equip;
                     } catch (e) {}
                   }
                 } else if (eventData.type === "hitl_awaiting") {
@@ -1274,7 +1277,7 @@ export default function Home() {
                   setExecutionReport(parsed.execution);
                   setDetectiveReport(parsed.detective);
                   setKnowledgeReport(parsed.knowledge);
-                  setLastSecuredEquipment(activeEquipment || selectedPreset);
+                  setLastSecuredEquipment(detectedEquipment || selectedPreset);
                   // Auto-switch to Incident Report tab and scroll to it
                   setResultsView("report");
                   setTimeout(() => {
@@ -1302,7 +1305,7 @@ export default function Home() {
       setErrorMsg(err.message || "An unexpected network error occurred.");
     } finally {
       setIsRunning(false);
-      fetchAllData(); // Reload metrics & history logs
+      fetchAllData(true); // Reload metrics & history logs
     }
   };
 
@@ -1317,7 +1320,7 @@ export default function Home() {
       });
       if (resp.ok) {
         alert(`Blueprint details for "${selectedBlueprint}" updated successfully.`);
-        fetchAllData();
+        fetchAllData(true);
       }
     } catch (err) {
       alert("Error saving blueprint spec.");
@@ -1335,7 +1338,7 @@ export default function Home() {
       if (resp.ok) {
         alert(`Blueprint "${selectedBlueprint}" deleted.`);
         setSelectedBlueprint("");
-        fetchAllData();
+        fetchAllData(true);
       }
     } catch (err) {
       alert("Error deleting blueprint.");
@@ -1396,7 +1399,7 @@ export default function Home() {
       alert("Failed to connect to network scan service.");
     } finally {
       setIsScanningNetwork(false);
-      fetchAllData();
+      fetchAllData(true);
     }
   };
 
@@ -1415,7 +1418,7 @@ export default function Home() {
         setNewBlueprintName("");
         setNewBlueprintSpec("");
         setShowAddBlueprint(false);
-        fetchAllData();
+        fetchAllData(true);
       }
     } catch (err) {
       alert("Error creating blueprint.");
@@ -1878,12 +1881,27 @@ export default function Home() {
       const resp = await fetch("/api/reset", { method: "POST" });
       if (resp.ok) {
         alert("Sandbox database and agent rules reset to factory defaults successfully!");
-        fetchAllData();
+        fetchAllData(true);
       } else {
         alert("Failed to reset sandbox.");
       }
     } catch (err) {
       alert("Error resetting sandbox.");
+    }
+  };
+
+  const handleGranularReset = async (type: string, message: string) => {
+    if (!confirm(message)) return;
+    try {
+      const resp = await fetch(`/api/reset/${type}`, { method: "POST" });
+      if (resp.ok) {
+        alert(`${type.charAt(0).toUpperCase() + type.slice(1)} reset successfully!`);
+        fetchAllData(true);
+      } else {
+        alert(`Failed to reset ${type}.`);
+      }
+    } catch (err) {
+      alert(`Error resetting ${type}.`);
     }
   };
 
@@ -2090,244 +2108,7 @@ export default function Home() {
     );
   }
 
-  const SwarmGraph = () => {
-    const activeAgentLog = safeGuardLogs.length > 0 ? safeGuardLogs[safeGuardLogs.length - 1].agent : "";
-    
-    const nodes = [
-      { id: "coordinator", label: "Coordinator", name: "Coordinator Agent", x: 200, y: 55, color: "#3b82f6", short: "CO" },
-      { id: "analyst", label: "Systems Analyst", name: "Systems Analyst Agent", x: 320, y: 125, color: "#f59e0b", short: "SA" },
-      { id: "auditor", label: "Safety Auditor", name: "Safety Auditor Agent", x: 320, y: 245, color: "#10b981", short: "AU" },
-      { id: "execution", label: "Execution Agent", name: "Execution Agent", x: 200, y: 315, color: "#8b5cf6", short: "EX" },
-      { id: "forensic", label: "Forensic Investigator", name: "Forensic Investigator Agent", x: 80, y: 245, color: "#f43f5e", short: "FI" },
-      { id: "curator", label: "Knowledge Curator", name: "Knowledge Curator Agent", x: 80, y: 125, color: "#06b6d4", short: "KC" },
-    ];
 
-    const links = [
-      { source: "coordinator", target: "analyst", path: "M 200 55 L 320 125" },
-      { source: "analyst", target: "auditor", path: "M 320 125 L 320 245" },
-      { source: "auditor", target: "execution", path: "M 320 245 L 200 315" },
-      { source: "execution", target: "forensic", path: "M 200 315 L 80 245" },
-      { source: "forensic", target: "curator", path: "M 80 245 L 80 125" },
-      { source: "curator", target: "analyst", path: "M 80 125 Q 200 125 320 125" },
-      { source: "auditor", target: "analyst", path: "M 320 245 Q 360 185 320 125" },
-    ];
-
-    const isLinkActive = (source: string, target: string): boolean => {
-      if (!isRunning) return false;
-      if (activeAgentLog.includes("Coordinator") && source === "coordinator" && target === "analyst") return false;
-      if (activeAgentLog.includes("Analyst") && source === "coordinator" && target === "analyst") return true;
-      if (activeAgentLog.includes("Auditor") && source === "analyst" && target === "auditor") return true;
-      if (activeAgentLog.includes("Execution") && source === "auditor" && target === "execution") return true;
-      if (activeAgentLog.includes("Forensic") && source === "execution" && target === "forensic") return true;
-      if (activeAgentLog.includes("Curator") && source === "forensic" && target === "curator") return true;
-      if (activeAgentLog.includes("Analyst") && safeGuardLogs.some(l => l.text.includes("violat") || l.text.includes("REJECTED")) && source === "auditor" && target === "analyst") return true;
-      if (activeAgentLog.includes("Analyst") && source === "curator" && target === "analyst") return true;
-      return false;
-    };
-
-    const getHexagonPoints = (cx: number, cy: number, r: number): string => {
-      const points = [];
-      for (let i = 0; i < 6; i++) {
-        const angle = (Math.PI / 180) * (60 * i - 30);
-        const x = cx + r * Math.cos(angle);
-        const y = cy + r * Math.sin(angle);
-        points.push(`${x},${y}`);
-      }
-      return points.join(" ");
-    };
-
-    return (
-      <svg viewBox="0 0 400 360" className="w-full h-full">
-        <defs>
-          <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="3" result="blur" />
-            <feMerge>
-              <feMergeNode in="blur" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
-        
-        {/* Connections (Links) */}
-        {links.map((link, idx) => {
-          const active = isLinkActive(link.source, link.target);
-          return (
-            <g key={idx}>
-              <path
-                d={link.path}
-                fill="none"
-                stroke={active ? (link.source === "auditor" && link.target === "analyst" ? "#f59e0b" : "#3b82f6") : "#e2e8f0"}
-                strokeWidth={active ? 2.5 : 1.5}
-                className={`transition-colors duration-300 dark:stroke-slate-700`}
-                strokeDasharray={link.source === "auditor" && link.target === "analyst" ? "4,4" : "none"}
-              />
-              {active && (
-                <circle r="4.5" fill={link.source === "auditor" && link.target === "analyst" ? "#f59e0b" : "#60a5fa"} filter="url(#glow)">
-                  <animateMotion dur="1.2s" repeatCount="indefinite" path={link.path} />
-                </circle>
-              )}
-            </g>
-          );
-        })}
-
-        {/* Nodes */}
-        {nodes.map((node) => {
-          const active = isRunning && activeAgentLog.includes(node.label.replace(" Agent", ""));
-          return (
-            <g key={node.id} className="cursor-pointer group">
-              {active && (
-                <polygon
-                  points={getHexagonPoints(node.x, node.y, 29)}
-                  fill="none"
-                  stroke={node.color}
-                  strokeWidth="1.5"
-                  opacity="0.8"
-                  filter="url(#glow)"
-                >
-                  <animate attributeName="transform" type="scale" values="1; 1.08; 1" keyTimes="0; 0.5; 1" dur="1.5s" repeatCount="indefinite" transform-origin={`${node.x} ${node.y}`} />
-                </polygon>
-              )}
-              
-              <polygon
-                points={getHexagonPoints(node.x, node.y, 23)}
-                className={`transition-all duration-300 ${
-                  active 
-                    ? "fill-slate-100 dark:fill-slate-800" 
-                    : "fill-white dark:fill-slate-900 hover:fill-slate-50 dark:hover:fill-slate-800"
-                }`}
-                stroke={active ? node.color : "#94a3b8"}
-                strokeWidth={active ? 3 : 1.5}
-                filter={active ? "url(#glow)" : "none"}
-              />
-              
-              <text
-                x={node.x}
-                y={node.y + 4}
-                textAnchor="middle"
-                className={`text-[10px] font-mono font-black ${
-                  active ? "fill-slate-900 dark:fill-white" : "fill-slate-600 dark:fill-slate-400"
-                }`}
-              >
-                {node.short}
-              </text>
-
-              <text
-                x={node.x}
-                y={node.y + 36}
-                textAnchor="middle"
-                className={`text-[8px] font-bold tracking-tight transition-colors duration-300 ${
-                  active 
-                    ? "fill-blue-600 dark:fill-blue-400 font-extrabold" 
-                    : "fill-slate-500 dark:fill-slate-400"
-                }`}
-              >
-                {node.label}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-    );
-  };
-
-  const PlantLayoutMap = () => {
-    const sectors = [
-      {
-        id: "sector-a",
-        name: "Sector A: Chemical Process",
-        color: "border-blue-200 dark:border-blue-900 bg-blue-50/10",
-        items: ["EV Battery Vat 4", "Chemical Reactor R-202", "Cooling Tower 2"]
-      },
-      {
-        id: "sector-b",
-        name: "Sector B: Power & Utility",
-        color: "border-amber-200 dark:border-amber-900 bg-amber-50/10",
-        items: ["Main Generator Block A", "Boiler B-50", "Gas Flare System GF-8", "Transformer T-1"]
-      },
-      {
-        id: "sector-c",
-        name: "Sector C: Assembly & Press",
-        color: "border-emerald-200 dark:border-emerald-900 bg-emerald-50/10",
-        items: ["Robotic Arm 9", "Conveyor Belt 12", "Pneumatic Press 7", "Hydraulic Lift HL-3"]
-      },
-      {
-        id: "sector-d",
-        name: "Sector D: Auxiliary System",
-        color: "border-cyan-200 dark:border-cyan-900 bg-cyan-50/10",
-        items: ["Centrifugal Pump P-101", "Cooling Tower 1"]
-      }
-    ];
-
-    const getEquipmentStatus = (name: string): "normal" | "incident" | "containing" | "secured" => {
-      const equipLower = name.toLowerCase();
-      const activeLower = activeEquipment ? activeEquipment.toLowerCase() : "";
-      const presetLower = selectedPreset ? selectedPreset.toLowerCase() : "";
-      
-      const isActive = isRunning && (
-        (activeLower && equipLower === activeLower) ||
-        (!activeLower && equipLower === presetLower)
-      );
-      
-      if (isActive) {
-        const isContaining = executionReport || safeGuardLogs.some(
-          l => l.agent.includes("Execution") || l.agent.includes("Forensic") || l.agent.includes("Curator")
-        );
-        return isContaining ? "containing" : "incident";
-      }
-      
-      const isSecured = !isRunning && lastSecuredEquipment && equipLower === lastSecuredEquipment.toLowerCase();
-      
-      return isSecured ? "secured" : "normal";
-    };
-
-    return (
-      <div className="w-full h-full grid grid-cols-2 gap-3 p-1 overflow-y-auto">
-        {sectors.map((sector) => (
-          <div key={sector.id} className={`border rounded-lg p-3 flex flex-col justify-between ${sector.color}`}>
-            <div className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">
-              {sector.name}
-            </div>
-            <div className="grid grid-cols-2 gap-2 flex-1">
-              {sector.items.map((name) => {
-                const status = getEquipmentStatus(name);
-                let statusColor = "bg-slate-100 border-slate-200 dark:bg-slate-900/50 dark:border-slate-800 text-slate-500 dark:text-slate-400";
-                let statusBadge = null;
-                
-                if (status === "incident") {
-                  statusColor = "bg-red-500/10 border-red-500/40 text-red-500 dark:bg-red-950/20 dark:border-red-900/80 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.2)]";
-                  statusBadge = <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-ping" />;
-                } else if (status === "containing") {
-                  statusColor = "bg-amber-500/10 border-amber-500/40 text-amber-500 dark:bg-amber-950/20 dark:border-amber-900/80 shadow-[0_0_8px_rgba(245,158,11,0.2)]";
-                  statusBadge = <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />;
-                } else if (status === "secured") {
-                  statusColor = "bg-cyan-500/10 border-cyan-500/40 text-cyan-600 dark:text-cyan-400 dark:bg-cyan-950/20 dark:border-cyan-900/80 shadow-[0_0_8px_rgba(6,182,212,0.2)]";
-                  statusBadge = <span className="h-1.5 w-1.5 rounded-full bg-cyan-500" />;
-                }
-                
-                return (
-                  <div key={name} className={`border rounded p-2 flex flex-col justify-between text-[10px] font-bold ${statusColor}`}>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="truncate pr-1">{name}</span>
-                      {statusBadge}
-                    </div>
-                    <div className="flex items-center justify-between mt-auto">
-                      {getPresetIcon(name)}
-                      <span className="text-[8px] font-extrabold uppercase opacity-85">
-                        {status === "normal" && "Idle"}
-                        {status === "incident" && "Alert Spike"}
-                        {status === "containing" && "Isolating"}
-                        {status === "secured" && "Secured"}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-    );
-  };
 
   return (
     <div className="premium-root flex h-full w-full overflow-hidden" style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',sans-serif",letterSpacing:'-0.01em'}}>
@@ -2727,7 +2508,18 @@ export default function Home() {
                         )}
                       </div>
                       <div className="flex-1 border border-slate-200 dark:border-slate-800 rounded-lg bg-slate-50 dark:bg-slate-900/20 flex items-center justify-center overflow-hidden p-2">
-                        {leftCardView === "graph" ? <SwarmGraph /> : <PlantLayoutMap />}
+                        {leftCardView === "graph" ? (
+                          <SwarmGraph isRunning={isRunning} safeGuardLogs={safeGuardLogs} />
+                        ) : (
+                          <PlantLayoutMap
+                            isRunning={isRunning}
+                            activeEquipment={activeEquipment}
+                            selectedPreset={selectedPreset}
+                            lastSecuredEquipment={lastSecuredEquipment}
+                            executionReport={executionReport}
+                            safeGuardLogs={safeGuardLogs}
+                          />
+                        )}
                       </div>
                     </div>
 
@@ -4038,11 +3830,70 @@ export default function Home() {
                       {isSavingSettings ? "Saving Settings..." : "Save Safety Config"}
                     </button>
                   </div>
+
+                  {/* Android Companion Customizations */}
+                  <div className="bg-slate-50 dark:bg-slate-950 p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-4">
+                    <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider border-b border-slate-200 dark:border-slate-800 pb-2 flex items-center gap-1.5">
+                      <span>Android Companion Integration</span>
+                    </h4>
+                    
+                    <div className="space-y-4">
+                      {/* Enable Toggle */}
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">Enable Push Notifications</span>
+                          <p className="text-[9px] text-slate-500">Divert critical containment alerts to Android devices.</p>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={settings.android_push_notifications ?? false}
+                            onChange={(e) => setSettings({ ...settings, android_push_notifications: e.target.checked })}
+                            className="rounded border-slate-350 text-blue-600 focus:ring-blue-500 h-4 w-4 bg-white dark:bg-slate-900"
+                          />
+                        </label>
+                      </div>
+
+                      {/* Device Token */}
+                      <div>
+                        <label className="block text-[9px] font-bold text-slate-500 uppercase mb-1">FCM Device Token</label>
+                        <input
+                          type="text"
+                          placeholder="Enter Android FCM Device Token"
+                          value={settings.android_device_token ?? ""}
+                          onChange={(e) => setSettings({ ...settings, android_device_token: e.target.value })}
+                          className="w-full text-[11px] p-2 bg-white dark:bg-slate-900 border border-slate-350 dark:border-slate-700 rounded-lg text-slate-850 dark:text-slate-150 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                        />
+                      </div>
+
+                      {/* Notification Level */}
+                      <div>
+                        <label className="block text-[9px] font-bold text-slate-500 uppercase mb-1">Minimum Alert Level</label>
+                        <select
+                          value={settings.android_min_alert_level ?? "WARNING"}
+                          onChange={(e) => setSettings({ ...settings, android_min_alert_level: e.target.value })}
+                          className="w-full text-[11px] p-2 bg-white dark:bg-slate-900 border border-slate-350 dark:border-slate-700 rounded-lg text-slate-850 dark:text-slate-150 focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                        >
+                          <option value="INFO">INFO (All alerts)</option>
+                          <option value="WARNING">WARNING (Exceedances & Faults)</option>
+                          <option value="CRITICAL">CRITICAL (Runaway risks only)</option>
+                        </select>
+                      </div>
+
+                      <button
+                        onClick={saveSettings}
+                        disabled={isSavingSettings}
+                        className="w-full text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-lg transition disabled:opacity-50"
+                      >
+                        {isSavingSettings ? "Saving Settings..." : "Save Android Settings"}
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
-                {/* Section B: Cost metrics card */}
+                {/* Section B: Cost metrics card & Android Companion */}
                 <div className="space-y-6">
-                  <div className="bg-slate-50 dark:bg-slate-950 p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-4 h-full flex flex-col justify-between">
+                  <div className="bg-slate-50 dark:bg-slate-950 p-5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-4">
                     <div>
                       <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider border-b border-slate-200 dark:border-slate-800 pb-2 mb-4">
                         Swarm Cost & API Statistics
@@ -4185,18 +4036,67 @@ export default function Home() {
                     Destructive operations that reset the containment facility control environment.
                   </p>
                 </div>
-                <div className="flex items-center justify-between bg-white dark:bg-slate-900/50 p-4 rounded-xl border border-red-200/50 dark:border-red-900/20">
-                  <div>
-                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200">Reset System Database</span>
-                    <p className="text-[9px] text-slate-500 mt-0.5">Purges all telemetry history logs, restores default blueprints, and resets agent system rules to factory defaults.</p>
+
+                <div className="grid grid-cols-1 gap-3">
+                  {/* Action 1: Clear History Logs */}
+                  <div className="flex items-center justify-between bg-white dark:bg-slate-900/50 p-4 rounded-xl border border-red-100 dark:border-red-950/40">
+                    <div>
+                      <span className="text-xs font-bold text-slate-800 dark:text-slate-200">Clear Telemetry History</span>
+                      <p className="text-[9px] text-slate-500 mt-0.5">Purges all incident run logs, telemetry history, and safety stats.</p>
+                    </div>
+                    <button
+                      onClick={() => handleGranularReset("history", "Are you sure you want to clear telemetry history? This will delete all logged runs.")}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold text-[9px] uppercase tracking-wider text-white bg-red-600 hover:bg-red-750 transition"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>Clear Logs</span>
+                    </button>
                   </div>
-                  <button
-                    onClick={resetSandbox}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold text-[10px] uppercase tracking-wider text-white bg-red-600 hover:bg-red-700 transition"
-                  >
-                    <Wrench className="h-3.5 w-3.5" />
-                    <span>Reset Database</span>
-                  </button>
+
+                  {/* Action 2: Reset Blueprints */}
+                  <div className="flex items-center justify-between bg-white dark:bg-slate-900/50 p-4 rounded-xl border border-red-100 dark:border-red-950/40">
+                    <div>
+                      <span className="text-xs font-bold text-slate-800 dark:text-slate-200">Reset Equipment Blueprints</span>
+                      <p className="text-[9px] text-slate-500 mt-0.5">Overwrites active database specs with the 20+ original seed specs.</p>
+                    </div>
+                    <button
+                      onClick={() => handleGranularReset("blueprints", "Are you sure you want to reset equipment blueprints? This will revert any custom thresholds.")}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold text-[9px] uppercase tracking-wider text-white bg-red-600 hover:bg-red-750 transition"
+                    >
+                      <Database className="h-3.5 w-3.5" />
+                      <span>Reset Specs</span>
+                    </button>
+                  </div>
+
+                  {/* Action 3: Reset Prompt Rules */}
+                  <div className="flex items-center justify-between bg-white dark:bg-slate-900/50 p-4 rounded-xl border border-red-100 dark:border-red-950/40">
+                    <div>
+                      <span className="text-xs font-bold text-slate-800 dark:text-slate-200">Reset Swarm Prompt Rules</span>
+                      <p className="text-[9px] text-slate-500 mt-0.5">Restores agent definitions and compliance rules to factory defaults.</p>
+                    </div>
+                    <button
+                      onClick={() => handleGranularReset("prompts", "Are you sure you want to reset agent prompt rules? This will overwrite recent learning optimizations.")}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold text-[9px] uppercase tracking-wider text-white bg-red-600 hover:bg-red-750 transition"
+                    >
+                      <Wrench className="h-3.5 w-3.5" />
+                      <span>Reset Rules</span>
+                    </button>
+                  </div>
+
+                  {/* Action 4: Reset Calibration Settings */}
+                  <div className="flex items-center justify-between bg-white dark:bg-slate-900/50 p-4 rounded-xl border border-red-100 dark:border-red-950/40">
+                    <div>
+                      <span className="text-xs font-bold text-slate-800 dark:text-slate-200">Reset Calibration Settings</span>
+                      <p className="text-[9px] text-slate-500 mt-0.5">Reverts model configurations, fallback timeouts, and Android device links.</p>
+                    </div>
+                    <button
+                      onClick={() => handleGranularReset("settings", "Are you sure you want to reset settings? This will revert all model routings and token limits.")}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold text-[9px] uppercase tracking-wider text-white bg-red-600 hover:bg-red-750 transition"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      <span>Reset Settings</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -4257,3 +4157,278 @@ export default function Home() {
     </div>
   );
 }
+
+const getPresetIcon = (name: string) => {
+  // Single monochrome icon — category hinted by shape only, no color
+  if (name.includes("Vat") || name.includes("Boiler") || name.includes("Flare") || name.includes("Purge")) 
+    return <Flame className="h-3.5 w-3.5 shrink-0" style={{color:'var(--text-muted)'}} />;
+  if (name.includes("Rack") || name.includes("Server")) 
+    return <Server className="h-3.5 w-3.5 shrink-0" style={{color:'var(--text-muted)'}} />;
+  if (name.includes("Arm") || name.includes("Robotic") || name.includes("Press") || name.includes("Conveyor")) 
+    return <Cpu className="h-3.5 w-3.5 shrink-0" style={{color:'var(--text-muted)'}} />;
+  if (name.includes("Tower") || name.includes("Cooling") || name.includes("Pump") || name.includes("Compressor") || name.includes("Tank")) 
+    return <Droplets className="h-3.5 w-3.5 shrink-0" style={{color:'var(--text-muted)'}} />;
+  if (name.includes("Generator") || name.includes("EV Battery") || name.includes("Transformer") || name.includes("Gas")) 
+    return <Zap className="h-3.5 w-3.5 shrink-0" style={{color:'var(--text-muted)'}} />;
+  return <ShieldAlert className="h-3.5 w-3.5 shrink-0" style={{color:'var(--text-muted)'}} />;
+};
+
+interface SwarmGraphProps {
+  isRunning: boolean;
+  safeGuardLogs: SafeGuardLog[];
+}
+
+const SwarmGraph = ({ isRunning, safeGuardLogs }: SwarmGraphProps) => {
+  const activeAgentLog = safeGuardLogs.length > 0 ? safeGuardLogs[safeGuardLogs.length - 1].agent : "";
+  
+  const nodes = [
+    { id: "coordinator", label: "Coordinator", name: "Coordinator Agent", x: 200, y: 55, color: "#3b82f6", short: "CO" },
+    { id: "analyst", label: "Systems Analyst", name: "Systems Analyst Agent", x: 320, y: 125, color: "#f59e0b", short: "SA" },
+    { id: "auditor", label: "Safety Auditor", name: "Safety Auditor Agent", x: 320, y: 245, color: "#10b981", short: "AU" },
+    { id: "execution", label: "Execution Agent", name: "Execution Agent", x: 200, y: 315, color: "#8b5cf6", short: "EX" },
+    { id: "forensic", label: "Forensic Investigator", name: "Forensic Investigator Agent", x: 80, y: 245, color: "#f43f5e", short: "FI" },
+    { id: "curator", label: "Knowledge Curator", name: "Knowledge Curator Agent", x: 80, y: 125, color: "#06b6d4", short: "KC" },
+  ];
+
+  const links = [
+    { source: "coordinator", target: "analyst", path: "M 200 55 L 320 125" },
+    { source: "analyst", target: "auditor", path: "M 320 125 L 320 245" },
+    { source: "auditor", target: "execution", path: "M 320 245 L 200 315" },
+    { source: "execution", target: "forensic", path: "M 200 315 L 80 245" },
+    { source: "forensic", target: "curator", path: "M 80 245 L 80 125" },
+    { source: "curator", target: "analyst", path: "M 80 125 Q 200 125 320 125" },
+    { source: "auditor", target: "analyst", path: "M 320 245 Q 360 185 320 125" },
+  ];
+
+  const isLinkActive = (source: string, target: string): boolean => {
+    if (!isRunning) return false;
+    if (activeAgentLog.includes("Coordinator") && source === "coordinator" && target === "analyst") return false;
+    if (activeAgentLog.includes("Analyst") && source === "coordinator" && target === "analyst") return true;
+    if (activeAgentLog.includes("Auditor") && source === "analyst" && target === "auditor") return true;
+    if (activeAgentLog.includes("Execution") && source === "auditor" && target === "execution") return true;
+    if (activeAgentLog.includes("Forensic") && source === "execution" && target === "forensic") return true;
+    if (activeAgentLog.includes("Curator") && source === "forensic" && target === "curator") return true;
+    if (activeAgentLog.includes("Analyst") && safeGuardLogs.some(l => l.text.includes("violat") || l.text.includes("REJECTED")) && source === "auditor" && target === "analyst") return true;
+    if (activeAgentLog.includes("Analyst") && source === "curator" && target === "analyst") return true;
+    return false;
+  };
+
+  const getHexagonPoints = (cx: number, cy: number, r: number): string => {
+    const points = [];
+    for (let i = 0; i < 6; i++) {
+      const angle = (Math.PI / 180) * (60 * i - 30);
+      const x = cx + r * Math.cos(angle);
+      const y = cy + r * Math.sin(angle);
+      points.push(`${x},${y}`);
+    }
+    return points.join(" ");
+  };
+
+  return (
+    <svg viewBox="0 0 400 360" className="w-full h-full">
+      <defs>
+        <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="3" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
+      
+      {/* Connections (Links) */}
+      {links.map((link, idx) => {
+        const active = isLinkActive(link.source, link.target);
+        return (
+          <g key={idx}>
+            <path
+              d={link.path}
+              fill="none"
+              stroke={active ? (link.source === "auditor" && link.target === "analyst" ? "#f59e0b" : "#3b82f6") : "#e2e8f0"}
+              strokeWidth={active ? 2.5 : 1.5}
+              className={`transition-colors duration-300 dark:stroke-slate-700`}
+              strokeDasharray={link.source === "auditor" && link.target === "analyst" ? "4,4" : "none"}
+            />
+            {active && (
+              <circle r="4.5" fill={link.source === "auditor" && link.target === "analyst" ? "#f59e0b" : "#60a5fa"} filter="url(#glow)">
+                <animateMotion dur="1.2s" repeatCount="indefinite" path={link.path} />
+              </circle>
+            )}
+          </g>
+        );
+      })}
+
+      {/* Nodes */}
+      {nodes.map((node) => {
+        const active = isRunning && activeAgentLog.includes(node.label.replace(" Agent", ""));
+        return (
+          <g key={node.id} className="cursor-pointer group">
+            {active && (
+              <polygon
+                points={getHexagonPoints(node.x, node.y, 29)}
+                fill="none"
+                stroke={node.color}
+                strokeWidth="1.5"
+                opacity="0.8"
+                filter="url(#glow)"
+              >
+                <animate attributeName="transform" type="scale" values="1; 1.08; 1" keyTimes="0; 0.5; 1" dur="1.5s" repeatCount="indefinite" transform-origin={`${node.x} ${node.y}`} />
+              </polygon>
+            )}
+            
+            <polygon
+              points={getHexagonPoints(node.x, node.y, 23)}
+              className={`transition-all duration-300 ${
+                active 
+                  ? "fill-slate-100 dark:fill-slate-800" 
+                  : "fill-white dark:fill-slate-900 hover:fill-slate-50 dark:hover:fill-slate-800"
+              }`}
+              stroke={active ? node.color : "#94a3b8"}
+              strokeWidth={active ? 3 : 1.5}
+              filter={active ? "url(#glow)" : "none"}
+            />
+            
+            <text
+              x={node.x}
+              y={node.y + 4}
+              textAnchor="middle"
+              className={`text-[10px] font-mono font-black ${
+                active ? "fill-slate-900 dark:fill-white" : "fill-slate-600 dark:fill-slate-400"
+              }`}
+            >
+              {node.short}
+            </text>
+
+            <text
+              x={node.x}
+              y={node.y + 36}
+              textAnchor="middle"
+              className={`text-[8px] font-bold tracking-tight transition-colors duration-300 ${
+                active 
+                  ? "fill-blue-600 dark:fill-blue-400 font-extrabold" 
+                  : "fill-slate-500 dark:fill-slate-400"
+              }`}
+            >
+              {node.label}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+};
+
+interface PlantLayoutMapProps {
+  isRunning: boolean;
+  activeEquipment: string;
+  selectedPreset: string;
+  lastSecuredEquipment: string;
+  executionReport: string;
+  safeGuardLogs: SafeGuardLog[];
+}
+
+const PlantLayoutMap = ({
+  isRunning,
+  activeEquipment,
+  selectedPreset,
+  lastSecuredEquipment,
+  executionReport,
+  safeGuardLogs
+}: PlantLayoutMapProps) => {
+  const sectors = [
+    {
+      id: "sector-a",
+      name: "Sector A: Chemical Process",
+      color: "border-blue-200 dark:border-blue-900 bg-blue-50/10",
+      items: ["EV Battery Vat 4", "Chemical Reactor R-202", "Cooling Tower 2"]
+    },
+    {
+      id: "sector-b",
+      name: "Sector B: Power & Utility",
+      color: "border-amber-200 dark:border-amber-900 bg-amber-50/10",
+      items: ["Main Generator Block A", "Boiler B-50", "Gas Flare System GF-8", "Transformer T-1"]
+    },
+    {
+      id: "sector-c",
+      name: "Sector C: Assembly & Press",
+      color: "border-emerald-200 dark:border-emerald-900 bg-emerald-50/10",
+      items: ["Robotic Arm 9", "Conveyor Belt 12", "Pneumatic Press 7", "Hydraulic Lift HL-3"]
+    },
+    {
+      id: "sector-d",
+      name: "Sector D: Auxiliary System",
+      color: "border-cyan-200 dark:border-cyan-900 bg-cyan-50/10",
+      items: ["Centrifugal Pump P-101", "Cooling Tower 1"]
+    }
+  ];
+
+  const getEquipmentStatus = (name: string): "normal" | "incident" | "containing" | "secured" => {
+    const equipLower = name.toLowerCase();
+    const activeLower = activeEquipment ? activeEquipment.toLowerCase() : "";
+    const presetLower = selectedPreset ? selectedPreset.toLowerCase() : "";
+    
+    const isActive = isRunning && (
+      (activeLower && equipLower === activeLower) ||
+      (!activeLower && equipLower === presetLower)
+    );
+    
+    if (isActive) {
+      const isContaining = executionReport || safeGuardLogs.some(
+        l => l.agent.includes("Execution") || l.agent.includes("Forensic") || l.agent.includes("Curator")
+      );
+      return isContaining ? "containing" : "incident";
+    }
+    
+    const isSecured = !isRunning && lastSecuredEquipment && equipLower === lastSecuredEquipment.toLowerCase();
+    
+    return isSecured ? "secured" : "normal";
+  };
+
+  return (
+    <div className="w-full h-full grid grid-cols-2 gap-3 p-1 overflow-y-auto">
+      {sectors.map((sector) => (
+        <div key={sector.id} className={`border rounded-lg p-3 flex flex-col justify-between ${sector.color}`}>
+          <div className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2">
+            {sector.name}
+          </div>
+          <div className="grid grid-cols-2 gap-2 flex-1">
+            {sector.items.map((name) => {
+              const status = getEquipmentStatus(name);
+              let statusColor = "bg-slate-100 border-slate-200 dark:bg-slate-900/50 dark:border-slate-800 text-slate-500 dark:text-slate-400";
+              let statusBadge = null;
+              
+              if (status === "incident") {
+                statusColor = "bg-red-500/10 border-red-500/40 text-red-500 dark:bg-red-950/20 dark:border-red-900/80 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.2)]";
+                statusBadge = <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-ping" />;
+              } else if (status === "containing") {
+                statusColor = "bg-amber-500/10 border-amber-500/40 text-amber-500 dark:bg-amber-950/20 dark:border-amber-900/80 shadow-[0_0_8px_rgba(245,158,11,0.2)]";
+                statusBadge = <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />;
+              } else if (status === "secured") {
+                statusColor = "bg-cyan-500/10 border-cyan-500/40 text-cyan-600 dark:text-cyan-400 dark:bg-cyan-950/20 dark:border-cyan-900/80 shadow-[0_0_8px_rgba(6,182,212,0.2)]";
+                statusBadge = <span className="h-1.5 w-1.5 rounded-full bg-cyan-500" />;
+              }
+              
+              return (
+                <div key={name} className={`border rounded p-2 flex flex-col justify-between text-[10px] font-bold ${statusColor}`}>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="truncate pr-1">{name}</span>
+                    {statusBadge}
+                  </div>
+                  <div className="flex items-center justify-between mt-auto">
+                    {getPresetIcon(name)}
+                    <span className="text-[8px] font-extrabold uppercase opacity-85">
+                      {status === "normal" && "Idle"}
+                      {status === "incident" && "Alert Spike"}
+                      {status === "containing" && "Isolating"}
+                      {status === "secured" && "Secured"}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};

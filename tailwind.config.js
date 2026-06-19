@@ -9,6 +9,13 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        slate: {
+          150: '#e9eef4',
+          250: '#c8d1dc',
+          350: '#a3b0c0',
+          650: '#3e4c5e',
+          850: '#1a2332',
+        },
         // Premium Black palette tokens
         premium: {
           black:    "#000000",

@@ -19,6 +19,10 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("TechCareSafeGuard")
 
+# Quiet down verbose third-party loggers
+for log_name in ["httpx", "httpcore", "websockets", "aiosqlite", "urllib3"]:
+    logging.getLogger(log_name).setLevel(logging.WARNING)
+
 # Initialize Groq Client
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 groq_client = AsyncGroq(api_key=GROQ_API_KEY, max_retries=0, timeout=30.0) if GROQ_API_KEY else None
@@ -2123,7 +2127,6 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
             lines = block_content.split('\n')
             block_target = equipment_name
             block_threshold = "Exceeded safety limits"
-            block_protocol = "Direct fallback required"
             block_actions = []
             for line in lines:
                 line_str = line.strip()
@@ -2131,8 +2134,6 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
                     block_target = line_str.replace("TARGET:", "").strip()
                 elif line_str.startswith("CRITICAL THRESHOLD:") or line_str.startswith("CRITICAL FAULT:"):
                     block_threshold = line_str.replace("CRITICAL THRESHOLD:", "").replace("CRITICAL FAULT:", "").strip()
-                elif line_str.startswith("PROTOCOL:"):
-                    block_protocol = line_str.replace("PROTOCOL:", "").strip()
                 elif "ACTION" in line_str:
                     action_part = line_str.split(":", 1)[1].strip() if ":" in line_str else line_str
                     block_actions.append(action_part)
@@ -2140,7 +2141,6 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
                 parsed_blocks.append({
                     "target": block_target,
                     "threshold": block_threshold,
-                    "protocol": block_protocol,
                     "actions": block_actions
                 })
 
@@ -2181,12 +2181,10 @@ async def trigger_incident_async(alert_text: str, status_callback=None, delay: f
         if selected_block:
             target_machine = selected_block["target"]
             threshold = selected_block["threshold"]
-            protocol = selected_block["protocol"]
             actions = selected_block["actions"]
         else:
             target_machine = equipment_name
             threshold = "Exceeded safety limits"
-            protocol = "Direct fallback required"
             actions = []
 
         # Build structured Safety Incident Report sections
