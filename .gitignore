@@ -31,3 +31,6 @@ scratch/
 api/safeguard.db
 api/settings.json
 
+# Android keystores and signatures
+*.keystore
+*.idsig

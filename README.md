@@ -122,5 +122,30 @@ Open `http://localhost:3000` to view the real-time agent dashboard.
 
 ---
 
+## 📱 Android Companion & Push Notifications (FCM)
+
+TechCare SafeGuard includes integration with an Android companion application to send real-time push notifications of critical incident alerts directly to floor managers' devices.
+
+### 1. The Companion APK
+* **Pre-Signed Build:** The compiled companion application [Sync.apk](file:///home/sudo_ahilesh/Documents/Multi-AI-Agent/Sync.apk) is located in the root of the repository. It has been signed with the **v3 signature scheme** for compatibility with modern Android OS versions (Android 9 to 14+).
+* **Installation:** Transfer the APK to your device, uninstall any previous versions of the app, enable "Install from Unknown Sources", and run the installer.
+
+### 2. Dashboard Configuration
+Under the **System Settings** dashboard -> **Android Companion Integration** card:
+1. **Enable Push Notifications:** Check the toggle to activate notification routing.
+2. **FCM Device Token:** Paste the unique **Firebase Registration Token** copied from the settings screen of the Android companion app.
+3. **Minimum Alert Level:** Configure the filtering threshold:
+   * `INFO`: Receives all logs and telemetry updates.
+   * `WARNING`: Receives alerts for exceedances and minor faults.
+   * `CRITICAL`: Receives runaway risk and active crisis alerts only.
+
+### 3. Backend FCM Dispatcher
+* Implemented in [api/agents.py](file:///home/sudo_ahilesh/Documents/Multi-AI-Agent/api/agents.py) via `send_fcm_notification`.
+* If a Firebase Admin service account key is present (`api/firebase-key.json` or `FIREBASE_SERVICE_ACCOUNT` env variable), the backend initiates a real v1 FCM push notification.
+* If no credentials are found, the backend outputs a debug simulation log detailing the target device token and warning payloads.
+
+---
+
 ## 📝 License
 This project is open-source and available under the MIT License.
+
